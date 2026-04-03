@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials
 from postgrest.exceptions import APIError
+from pydantic import ValidationError
 
 from app.db.database import supabase
 from app.dependencies.auth import bearer_scheme, require_role
@@ -140,6 +141,21 @@ def approve_request(
                 detail="Request row is missing introducer ID",
             )
 
+        phone = req.get("phone")
+        name = req.get("name")
+        if phone is None or str(phone).strip() == "":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Request row is missing phone",
+            )
+        if name is None or str(name).strip() == "":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Request row is missing name",
+            )
+        phone = str(phone).strip()
+        name = str(name).strip()
+
         now = datetime.now(timezone.utc).isoformat()
         role = (req.get("role") or "").lower()
 
@@ -184,7 +200,7 @@ def approve_request(
             phone_exists = (
                 supabase.table("participants")
                 .select("id")
-                .eq(k["p_phone"], req["phone"])
+                .eq(k["p_phone"], phone)
                 .execute()
             )
             if phone_exists.data:
@@ -200,8 +216,8 @@ def approve_request(
 
             supabase.table("participants").insert({
                 k["p_investor"]: generate_investor_id(id_column=k["p_investor"]),
-                k["p_name"]: req["name"],
-                k["p_phone"]: req["phone"],
+                k["p_name"]: name,
+                k["p_phone"]: phone,
                 k["p_email"]: "",
                 k["p_address"]: "",
                 k["p_introducer"]: introducer_id,
@@ -214,7 +230,7 @@ def approve_request(
             phone_exists = (
                 supabase.table("partners")
                 .select("id")
-                .eq(k["a_phone"], req["phone"])
+                .eq(k["a_phone"], phone)
                 .execute()
             )
             if phone_exists.data:
@@ -230,8 +246,8 @@ def approve_request(
 
             supabase.table("partners").insert({
                 k["a_agent"]: generate_agent_id(id_column=k["a_agent"]),
-                k["a_name"]: req["name"],
-                k["a_phone"]: req["phone"],
+                k["a_name"]: name,
+                k["a_phone"]: phone,
                 k["a_email"]: "",
                 k["a_location"]: "",
                 k["a_introducer"]: introducer_id,
@@ -273,7 +289,13 @@ def approve_request(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Incomplete user_requests row returned from database.",
             )
-        return RequestResponse.model_validate(norm)
+        try:
+            return RequestResponse.model_validate(norm)
+        except ValidationError as e:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=e.errors(),
+            ) from e
 
     except HTTPException:
         raise
@@ -281,6 +303,16 @@ def approve_request(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=_format_api_error(e),
+        ) from e
+    except ValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=e.errors(),
+        ) from e
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"{type(e).__name__}: {e}",
         ) from e
 
 
@@ -346,7 +378,13 @@ def reject_request(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Incomplete user_requests row returned from database.",
             )
-        return RequestResponse.model_validate(norm)
+        try:
+            return RequestResponse.model_validate(norm)
+        except ValidationError as e:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=e.errors(),
+            ) from e
 
     except HTTPException:
         raise
@@ -354,4 +392,14 @@ def reject_request(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=_format_api_error(e),
+        ) from e
+    except ValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=e.errors(),
+        ) from e
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"{type(e).__name__}: {e}",
         ) from e

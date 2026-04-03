@@ -1,11 +1,19 @@
-from fastapi import FastAPI
+import logging
 
+import httpx
+from fastapi import FastAPI
+from postgrest.exceptions import APIError
+
+from app.core.config import SUPABASE_URL
 from app.db.database import supabase
+
 from app.routers.request import router as request_router
 from app.routers.unified_login import router as unified_login_router
 from app.routers.admin import router as admin_router
 from app.routers.participant import router as participant_router
 from app.routers.partner import router as partner_router
+
+logger = logging.getLogger(__name__)
 
 API_DESCRIPTION = """
 ## Flow
@@ -25,7 +33,14 @@ app = FastAPI(
 )
 
 
-def seed_defaults():
+def seed_defaults() -> None:
+    if not SUPABASE_URL or "YOUR_PROJECT_REF" in SUPABASE_URL.upper():
+        logger.warning(
+            "SUPABASE_URL is missing or still a placeholder; skipping seed_defaults. "
+            "Set a real URL in .env (Supabase Dashboard > Settings > API)."
+        )
+        return
+
     result = supabase.table("admins").select("id").eq("phone", "9131718611").execute()
     if not result.data:
         supabase.table("admins").insert({
@@ -63,7 +78,17 @@ def seed_defaults():
         }).execute()
 
 
-seed_defaults()
+try:
+    seed_defaults()
+except (httpx.ConnectError, httpx.TimeoutException) as e:
+    logger.warning(
+        "Cannot reach Supabase (%s); app will start but DB calls will fail until URL/network/key are fixed.",
+        e,
+    )
+except APIError as e:
+    logger.warning("Supabase rejected seed_defaults (check SUPABASE_KEY): %s", e)
+except Exception as e:
+    logger.warning("seed_defaults failed: %s", e)
 
 app.include_router(request_router)
 app.include_router(unified_login_router)

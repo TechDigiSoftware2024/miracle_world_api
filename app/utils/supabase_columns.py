@@ -82,8 +82,12 @@ def introducer_id_from_row(row: dict) -> Optional[str]:
 
 
 def normalize_user_request_row(row: dict) -> dict:
-    created = row.get("createdAt") if row.get("createdAt") is not None else row.get("created_at")
-    updated = row.get("updatedAt") if row.get("updatedAt") is not None else row.get("updated_at")
+    created = row.get("created_at")
+    if created is None:
+        created = row.get("createdAt")
+    updated = row.get("updated_at")
+    if updated is None:
+        updated = row.get("updatedAt")
     intro = introducer_id_from_row(row)
     return {
         "id": row.get("id"),

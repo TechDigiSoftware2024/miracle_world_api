@@ -1,6 +1,6 @@
-from pydantic import BaseModel, Field, AliasChoices, ConfigDict
+from pydantic import BaseModel, Field, AliasChoices, ConfigDict, field_validator
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Any
 
 
 class RequestCreate(BaseModel):
@@ -26,6 +26,27 @@ class RequestResponse(BaseModel):
         default=None,
         validation_alias=AliasChoices("updatedAt", "updated_at"),
     )
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def coerce_id(cls, v: Any) -> Any:
+        if v is None:
+            return v
+        return int(v)
+
+    @field_validator("phone", "role", "name", "status", "introducerId", mode="before")
+    @classmethod
+    def coerce_str(cls, v: Any) -> Any:
+        if v is None:
+            return v
+        return str(v)
+
+    @field_validator("pin", "message", mode="before")
+    @classmethod
+    def coerce_optional_str(cls, v: Any) -> Any:
+        if v is None:
+            return None
+        return str(v)
 
 
 class TrackResponse(BaseModel):
