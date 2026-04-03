@@ -206,6 +206,8 @@ def approve_request(
                 k["p_address"]: "",
                 k["p_introducer"]: introducer_id,
                 k["p_mpin"]: mpin,
+                k["p_status"]: "active",
+                k["p_total"]: 0.0,
             }).execute()
 
         elif role == "partner":
@@ -235,6 +237,7 @@ def approve_request(
                 k["a_introducer"]: introducer_id,
                 k["a_mpin"]: mpin,
                 k["a_profile"]: "",
+                k["a_status"]: "active",
             }).execute()
 
         else:
@@ -275,13 +278,20 @@ def approve_request(
     except HTTPException:
         raise
     except APIError as e:
-        detail = e.args[0] if e.args else str(e)
-        if isinstance(detail, dict):
-            detail = detail.get("message", str(detail))
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(detail),
+            detail=_format_api_error(e),
         ) from e
+
+
+def _format_api_error(e: APIError) -> str:
+    raw = e.args[0] if e.args else str(e)
+    if isinstance(raw, dict):
+        msg = raw.get("message") or str(raw)
+        if raw.get("details"):
+            msg = f"{msg} ({raw['details']})"
+        return msg
+    return str(raw)
 
 
 # ─── PROTECTED: Reject Request ───────────────────────────────────
@@ -341,10 +351,7 @@ def reject_request(
     except HTTPException:
         raise
     except APIError as e:
-        detail = e.args[0] if e.args else str(e)
-        if isinstance(detail, dict):
-            detail = detail.get("message", str(detail))
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(detail),
+            detail=_format_api_error(e),
         ) from e
