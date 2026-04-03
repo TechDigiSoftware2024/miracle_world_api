@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials
+from postgrest.exceptions import APIError
 
 from app.db.database import supabase
 from app.dependencies.auth import bearer_scheme, require_role
@@ -12,6 +13,12 @@ from app.schemas.auth import LoginRequest, TokenResponse
 from app.schemas.admin import AdminResponse
 from app.schemas.user_request import RequestResponse
 from app.utils.id_generator import generate_investor_id, generate_agent_id
+from app.utils.supabase_columns import (
+    approve_keys,
+    introducer_id_from_row,
+    normalize_user_request_row,
+    user_request_row_style,
+)
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -108,97 +115,173 @@ def approve_request(
     request_id: int,
     current_user: dict = Depends(require_role(["admin"])),
 ):
-    result = supabase.table("user_requests").select("*").eq("id", request_id).execute()
-    if not result.data:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Request not found",
-        )
-
-    req = result.data[0]
-
-    if req["status"] != "pending":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Request already {req['status']}",
-        )
-
-    introducer_id = req["introducerId"]
-    now = datetime.now(timezone.utc).isoformat()
-
-    p_check = supabase.table("participants").select("id").eq("investorId", introducer_id).execute()
-    a_check = supabase.table("partners").select("id").eq("agentId", introducer_id).execute()
-
-    if not p_check.data and not a_check.data:
-        supabase.table("user_requests").update({
-            "status": "rejected",
-            "message": "Rejected: Introducer ID does not exist",
-            "updatedAt": now,
-        }).eq("id", request_id).execute()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Introducer ID not found in participants or partners. Request has been rejected.",
-        )
-
-    mpin = str(random.randint(100000, 999999))
-    role = req["role"].lower()
-
-    if role == "participant":
-        phone_exists = supabase.table("participants").select("id").eq("phone", req["phone"]).execute()
-        if phone_exists.data:
-            supabase.table("user_requests").update({
-                "status": "rejected",
-                "message": "Rejected: Participant account already exists for this phone",
-                "updatedAt": now,
-            }).eq("id", request_id).execute()
+    try:
+        result = supabase.table("user_requests").select("*").eq("id", request_id).execute()
+        if not result.data:
             raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Participant account already exists for this phone",
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Request not found",
             )
 
-        supabase.table("participants").insert({
-            "investorId": generate_investor_id(),
-            "name": req["name"],
-            "phone": req["phone"],
-            "introducer": introducer_id,
-            "mpin": mpin,
-        }).execute()
+        req = result.data[0]
+        style = user_request_row_style(req)
+        k = approve_keys(style)
 
-    elif role == "partner":
-        phone_exists = supabase.table("partners").select("id").eq("phone", req["phone"]).execute()
-        if phone_exists.data:
-            supabase.table("user_requests").update({
-                "status": "rejected",
-                "message": "Rejected: Partner account already exists for this phone",
-                "updatedAt": now,
-            }).eq("id", request_id).execute()
+        if req.get("status") != "pending":
             raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Partner account already exists for this phone",
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Request already {req.get('status')}",
             )
 
-        supabase.table("partners").insert({
-            "agentId": generate_agent_id(),
-            "name": req["name"],
-            "phone": req["phone"],
-            "introducer": introducer_id,
-            "mpin": mpin,
-        }).execute()
+        introducer_id = introducer_id_from_row(req)
+        if not introducer_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Request row is missing introducer ID",
+            )
 
-    else:
+        now = datetime.now(timezone.utc).isoformat()
+        role = (req.get("role") or "").lower()
+
+        p_check = (
+            supabase.table("participants")
+            .select("id")
+            .eq(k["p_investor"], introducer_id)
+            .execute()
+        )
+        a_check = (
+            supabase.table("partners")
+            .select("id")
+            .eq(k["a_agent"], introducer_id)
+            .execute()
+        )
+        introducer_is_participant = bool(p_check.data)
+        introducer_is_partner = bool(a_check.data)
+
+        def reject_request_row(message: str, detail: str) -> None:
+            supabase.table("user_requests").update({
+                k["ur_status"]: "rejected",
+                k["ur_message"]: message,
+                k["ur_updated"]: now,
+            }).eq("id", request_id).select("*").execute()
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
+        if not introducer_is_participant and not introducer_is_partner:
+            reject_request_row(
+                "Rejected: Introducer ID does not exist",
+                "Introducer ID not found. Request has been rejected.",
+            )
+
+        if role == "partner" and not introducer_is_partner:
+            reject_request_row(
+                "Rejected: Partner requests require a partner introducer (agent ID)",
+                "For partner signup, introducer must be an existing partner agent ID. Request has been rejected.",
+            )
+
+        mpin = str(random.randint(100000, 999999))
+
+        if role == "participant":
+            phone_exists = (
+                supabase.table("participants")
+                .select("id")
+                .eq(k["p_phone"], req["phone"])
+                .execute()
+            )
+            if phone_exists.data:
+                supabase.table("user_requests").update({
+                    k["ur_status"]: "rejected",
+                    k["ur_message"]: "Rejected: Participant account already exists for this phone",
+                    k["ur_updated"]: now,
+                }).eq("id", request_id).select("*").execute()
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Participant account already exists for this phone",
+                )
+
+            supabase.table("participants").insert({
+                k["p_investor"]: generate_investor_id(id_column=k["p_investor"]),
+                k["p_name"]: req["name"],
+                k["p_phone"]: req["phone"],
+                k["p_email"]: "",
+                k["p_address"]: "",
+                k["p_introducer"]: introducer_id,
+                k["p_mpin"]: mpin,
+            }).execute()
+
+        elif role == "partner":
+            phone_exists = (
+                supabase.table("partners")
+                .select("id")
+                .eq(k["a_phone"], req["phone"])
+                .execute()
+            )
+            if phone_exists.data:
+                supabase.table("user_requests").update({
+                    k["ur_status"]: "rejected",
+                    k["ur_message"]: "Rejected: Partner account already exists for this phone",
+                    k["ur_updated"]: now,
+                }).eq("id", request_id).select("*").execute()
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Partner account already exists for this phone",
+                )
+
+            supabase.table("partners").insert({
+                k["a_agent"]: generate_agent_id(id_column=k["a_agent"]),
+                k["a_name"]: req["name"],
+                k["a_phone"]: req["phone"],
+                k["a_email"]: "",
+                k["a_location"]: "",
+                k["a_introducer"]: introducer_id,
+                k["a_mpin"]: mpin,
+                k["a_profile"]: "",
+            }).execute()
+
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid role. Must be 'participant' or 'partner'",
+            )
+
+        updated = (
+            supabase.table("user_requests")
+            .update({
+                k["ur_status"]: "approved",
+                k["ur_message"]: "Your request has been approved! Contact admin for mpin",
+                k["ur_pin"]: mpin,
+                k["ur_updated"]: now,
+            })
+            .eq("id", request_id)
+            .select("*")
+            .execute()
+        )
+        row = updated.data[0] if updated.data else None
+        if not row:
+            refetch = supabase.table("user_requests").select("*").eq("id", request_id).execute()
+            row = refetch.data[0] if refetch.data else None
+        if not row:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not read request after approval.",
+            )
+        norm = normalize_user_request_row(row)
+        if norm.get("introducerId") is None or norm.get("createdAt") is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Incomplete user_requests row returned from database.",
+            )
+        return RequestResponse.model_validate(norm)
+
+    except HTTPException:
+        raise
+    except APIError as e:
+        detail = e.args[0] if e.args else str(e)
+        if isinstance(detail, dict):
+            detail = detail.get("message", str(detail))
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid role. Must be 'participant' or 'partner'",
-        )
-
-    updated = supabase.table("user_requests").update({
-        "status": "approved",
-        "message": "Your request has been approved! Contact admin for mpin",
-        "pin": mpin,
-        "updatedAt": now,
-    }).eq("id", request_id).execute()
-
-    return updated.data[0]
+            detail=str(detail),
+        ) from e
 
 
 # ─── PROTECTED: Reject Request ───────────────────────────────────
@@ -209,26 +292,59 @@ def reject_request(
     request_id: int,
     current_user: dict = Depends(require_role(["admin"])),
 ):
-    result = supabase.table("user_requests").select("*").eq("id", request_id).execute()
-    if not result.data:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Request not found",
+    try:
+        result = supabase.table("user_requests").select("*").eq("id", request_id).execute()
+        if not result.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Request not found",
+            )
+
+        req = result.data[0]
+        k = approve_keys(user_request_row_style(req))
+
+        if req.get("status") != "pending":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Request already {req.get('status')}",
+            )
+
+        now = datetime.now(timezone.utc).isoformat()
+        updated = (
+            supabase.table("user_requests")
+            .update({
+                k["ur_status"]: "rejected",
+                k["ur_message"]: "Request rejected",
+                k["ur_updated"]: now,
+            })
+            .eq("id", request_id)
+            .select("*")
+            .execute()
         )
+        row = updated.data[0] if updated.data else None
+        if not row:
+            refetch = supabase.table("user_requests").select("*").eq("id", request_id).execute()
+            row = refetch.data[0] if refetch.data else None
+        if not row:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not read request after reject.",
+            )
+        norm = normalize_user_request_row(row)
+        if norm.get("introducerId") is None or norm.get("createdAt") is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Incomplete user_requests row returned from database.",
+            )
+        return RequestResponse.model_validate(norm)
 
-    req = result.data[0]
-
-    if req["status"] != "pending":
+    except HTTPException:
+        raise
+    except APIError as e:
+        detail = e.args[0] if e.args else str(e)
+        if isinstance(detail, dict):
+            detail = detail.get("message", str(detail))
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Request already {req['status']}",
-        )
-
-    now = datetime.now(timezone.utc).isoformat()
-    updated = supabase.table("user_requests").update({
-        "status": "rejected",
-        "message": "Request rejected",
-        "updatedAt": now,
-    }).eq("id", request_id).execute()
-
-    return updated.data[0]
+            detail=str(detail),
+        ) from e
