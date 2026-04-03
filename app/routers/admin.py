@@ -179,7 +179,7 @@ def approve_request(
                 k["ur_status"]: "rejected",
                 k["ur_message"]: message,
                 k["ur_updated"]: now,
-            }).eq("id", request_id).select("*").execute()
+            }).eq("id", request_id).execute()
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
 
         if not introducer_is_participant and not introducer_is_partner:
@@ -208,7 +208,7 @@ def approve_request(
                     k["ur_status"]: "rejected",
                     k["ur_message"]: "Rejected: Participant account already exists for this phone",
                     k["ur_updated"]: now,
-                }).eq("id", request_id).select("*").execute()
+                }).eq("id", request_id).execute()
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="Participant account already exists for this phone",
@@ -238,7 +238,7 @@ def approve_request(
                     k["ur_status"]: "rejected",
                     k["ur_message"]: "Rejected: Partner account already exists for this phone",
                     k["ur_updated"]: now,
-                }).eq("id", request_id).select("*").execute()
+                }).eq("id", request_id).execute()
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="Partner account already exists for this phone",
@@ -254,6 +254,12 @@ def approve_request(
                 k["a_mpin"]: mpin,
                 k["a_profile"]: "",
                 k["a_status"]: "active",
+                k["a_commission"]: 0.0,
+                k["a_self_commission"]: 0.0,
+                k["a_self_profit"]: 0.0,
+                k["a_gen_profit"]: 0.0,
+                k["a_deals"]: 0,
+                k["a_team"]: 0,
             }).execute()
 
         else:
@@ -271,7 +277,6 @@ def approve_request(
                 k["ur_updated"]: now,
             })
             .eq("id", request_id)
-            .select("*")
             .execute()
         )
         row = updated.data[0] if updated.data else None
@@ -360,7 +365,6 @@ def reject_request(
                 k["ur_updated"]: now,
             })
             .eq("id", request_id)
-            .select("*")
             .execute()
         )
         row = updated.data[0] if updated.data else None

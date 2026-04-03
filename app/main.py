@@ -1,10 +1,11 @@
 import logging
+from typing import Optional
 
 import httpx
 from fastapi import FastAPI
 from postgrest.exceptions import APIError
 
-from app.core.config import SUPABASE_URL
+from app.core.config import SUPABASE_KEY, SUPABASE_URL
 from app.db.database import supabase
 
 from app.routers.request import router as request_router
@@ -14,6 +15,19 @@ from app.routers.participant import router as participant_router
 from app.routers.partner import router as partner_router
 
 logger = logging.getLogger(__name__)
+
+
+def _supabase_key_is_configured(key: Optional[str]) -> bool:
+    k = (key or "").strip()
+    if not k:
+        return False
+    if k.lower() in ("your-service-role-key-here", "your-anon-key-here"):
+        return False
+    # Project API keys are JWT-shaped (three segments)
+    if k.count(".") != 2 or not k.startswith("eyJ"):
+        return False
+    return True
+
 
 API_DESCRIPTION = """
 ## Flow
@@ -38,6 +52,15 @@ def seed_defaults() -> None:
         logger.warning(
             "SUPABASE_URL is missing or still a placeholder; skipping seed_defaults. "
             "Set a real URL in .env (Supabase Dashboard > Settings > API)."
+        )
+        return
+
+    if not _supabase_key_is_configured(SUPABASE_KEY):
+        logger.warning(
+            "SUPABASE_KEY is missing, placeholder, or not a valid Supabase JWT. "
+            "Use the service_role key: Supabase Dashboard > Settings > API > "
+            "Project API keys > service_role (Reveal). Paste the full token into .env "
+            "or Render Environment. Skipping seed_defaults."
         )
         return
 
@@ -75,6 +98,12 @@ def seed_defaults() -> None:
             "introducer": "SYSTEM",
             "mpin": "000000",
             "status": "active",
+            "commission": 0.0,
+            "selfCommission": 0.0,
+            "selfProfit": 0.0,
+            "generatedProfitByTeam": 0.0,
+            "totalDeals": 0,
+            "totalTeamMembers": 0,
         }).execute()
 
 
