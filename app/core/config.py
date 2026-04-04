@@ -14,3 +14,10 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "fallback-secret-change-me")
 JWT_ALGORITHM = "HS256"
+
+# MSG91 OTP (optional — leave empty to disable /otp/* routes except clear errors)
+MSG91_AUTH_KEY = (os.getenv("MSG91_AUTH_KEY") or "").strip()
+MSG91_TEMPLATE_ID = (os.getenv("MSG91_TEMPLATE_ID") or "").strip()
+MSG91_BASE_URL = (
+    os.getenv("MSG91_BASE_URL") or "https://control.msg91.com/api/v5"
+).strip()

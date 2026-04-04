@@ -11,6 +11,7 @@ from app.utils.db_column_names import camel_participant_pk_column, camel_partner
 
 from app.routers.request import router as request_router
 from app.routers.unified_login import router as unified_login_router
+from app.routers.otp_auth import router as otp_auth_router
 from app.routers.admin import router as admin_router
 from app.routers.participant import router as participant_router
 from app.routers.partner import router as partner_router
@@ -34,12 +35,13 @@ API_DESCRIPTION = """
 ## Flow
 1. **New users** call `POST /request`, then `GET /track-request/{phone}`.
 2. **Optional**: `POST /check-admin-phone` with `{"phone":"..."}` returns `is_admin` so the UI can branch before mpin.
-3. **Login** (one screen): `POST /login` tries **admin → participant → partner** with the same phone + mpin. Use `role` in the response to open the correct app section. Role-specific logins (`/admin/login`, etc.) still work.
-4. **Protected routes** need header: `Authorization: Bearer <access_token>` from login.
-5. In **Swagger UI**, click **Authorize**, paste the token only (not the word Bearer), then call admin endpoints.
-6. **Approve request**: `PUT /admin/request/{request_id}/approve` creates a row in **participants** or **partners** based on the request role and sets a new mpin on the request record.
-7. **Admin directory**: `GET /admin/participants`, `GET /admin/partners`; `DELETE` / `PATCH` use path **`participantId`** / **`partnerId`** (e.g. `MWP123456`, `MWCP123456`). Body cannot change **phone** or the string PK.
-8. **Self profile**: `PATCH /participant/profile` and `PATCH /partner/profile` (participant or partner token); same rule — **phone** cannot be updated (omit it from JSON; sending unknown keys returns 422).
+3. **Login (MPIN)**: `POST /login` — phone + **mpin**; tries **admin → participant → partner**. Use `role` in the response for the app shell.
+4. **Login (OTP / MSG91)**: `POST /otp/send` → `POST /otp/login` with phone + **otp** (same JWT as MPIN login). Optional `POST /otp/retry`. Configure `MSG91_AUTH_KEY` and `MSG91_TEMPLATE_ID` on the server; Flutter should call **these** endpoints instead of embedding the MSG91 auth key in the app.
+5. **Protected routes** need header: `Authorization: Bearer <access_token>` from login.
+6. In **Swagger UI**, click **Authorize**, paste the token only (not the word Bearer), then call admin endpoints.
+7. **Approve request**: `PUT /admin/request/{request_id}/approve` creates a row in **participants** or **partners** based on the request role and sets a new mpin on the request record.
+8. **Admin directory**: `GET /admin/participants`, `GET /admin/partners`; `DELETE` / `PATCH` use path **`participantId`** / **`partnerId`** (e.g. `MWP123456`, `MWCP123456`). Body cannot change **phone** or the string PK.
+9. **Self profile**: `PATCH /participant/profile` and `PATCH /partner/profile` (participant or partner token); same rule — **phone** cannot be updated (omit it from JSON; sending unknown keys returns 422).
 """
 
 app = FastAPI(
@@ -135,6 +137,7 @@ except Exception as e:
 
 app.include_router(request_router)
 app.include_router(unified_login_router)
+app.include_router(otp_auth_router)
 app.include_router(admin_router)
 app.include_router(participant_router)
 app.include_router(partner_router)
