@@ -13,7 +13,12 @@ from app.core.security import create_token, decode_token
 from app.schemas.auth import LoginRequest, TokenResponse
 from app.schemas.admin import AdminResponse
 from app.schemas.user_request import RequestResponse
-from app.utils.id_generator import generate_investor_id, generate_agent_id
+from app.schemas.participant import ParticipantResponse, ParticipantUpdate
+from app.schemas.partner import PartnerResponse, PartnerUpdate
+from app.utils.id_generator import generate_participant_id, generate_partner_id
+from app.utils.db_column_names import camel_participant_pk_column, camel_partner_pk_column
+from app.utils.patch_payload import dump_update_or_400
+from app.utils.supabase_errors import format_api_error
 from app.utils.supabase_columns import (
     approve_keys,
     introducer_id_from_row,
@@ -108,6 +113,185 @@ def get_all_requests(
     return result.data
 
 
+# ─── PROTECTED: Participants & partners (list / delete / patch) ─
+
+
+@router.get("/participants", response_model=List[ParticipantResponse])
+def admin_list_participants(
+    current_user: dict = Depends(require_role(["admin"])),
+):
+    pid = camel_participant_pk_column()
+    result = supabase.table("participants").select("*").order(pid).execute()
+    return result.data
+
+
+@router.get("/partners", response_model=List[PartnerResponse])
+def admin_list_partners(
+    current_user: dict = Depends(require_role(["admin"])),
+):
+    prid = camel_partner_pk_column()
+    result = supabase.table("partners").select("*").order(prid).execute()
+    return result.data
+
+
+@router.delete("/participants/{participantId}")
+def admin_delete_participant(
+    participantId: str,
+    current_user: dict = Depends(require_role(["admin"])),
+):
+    try:
+        pid = camel_participant_pk_column()
+        existing = (
+            supabase.table("participants")
+            .select(pid)
+            .eq(pid, participantId)
+            .execute()
+        )
+        if not existing.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Participant not found",
+            )
+        supabase.table("participants").delete().eq(pid, participantId).execute()
+        return {"message": "Participant deleted", "participantId": participantId}
+    except HTTPException:
+        raise
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+
+
+@router.delete("/partners/{partnerId}")
+def admin_delete_partner(
+    partnerId: str,
+    current_user: dict = Depends(require_role(["admin"])),
+):
+    try:
+        prid = camel_partner_pk_column()
+        existing = (
+            supabase.table("partners")
+            .select(prid)
+            .eq(prid, partnerId)
+            .execute()
+        )
+        if not existing.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Partner not found",
+            )
+        supabase.table("partners").delete().eq(prid, partnerId).execute()
+        return {"message": "Partner deleted", "partnerId": partnerId}
+    except HTTPException:
+        raise
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+
+
+@router.patch("/participants/{participantId}", response_model=ParticipantResponse)
+def admin_patch_participant(
+    participantId: str,
+    payload: ParticipantUpdate,
+    current_user: dict = Depends(require_role(["admin"])),
+):
+    data = dump_update_or_400(payload)
+    try:
+        pid = camel_participant_pk_column()
+        existing = (
+            supabase.table("participants")
+            .select(pid)
+            .eq(pid, participantId)
+            .execute()
+        )
+        if not existing.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Participant not found",
+            )
+        updated = (
+            supabase.table("participants")
+            .update(data)
+            .eq(pid, participantId)
+            .execute()
+        )
+        row = updated.data[0] if updated.data else None
+        if not row:
+            refetch = (
+                supabase.table("participants")
+                .select("*")
+                .eq(pid, participantId)
+                .execute()
+            )
+            row = refetch.data[0] if refetch.data else None
+        if not row:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not read participant after update.",
+            )
+        return row
+    except HTTPException:
+        raise
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+
+
+@router.patch("/partners/{partnerId}", response_model=PartnerResponse)
+def admin_patch_partner(
+    partnerId: str,
+    payload: PartnerUpdate,
+    current_user: dict = Depends(require_role(["admin"])),
+):
+    data = dump_update_or_400(payload)
+    try:
+        prid = camel_partner_pk_column()
+        existing = (
+            supabase.table("partners")
+            .select(prid)
+            .eq(prid, partnerId)
+            .execute()
+        )
+        if not existing.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Partner not found",
+            )
+        updated = (
+            supabase.table("partners")
+            .update(data)
+            .eq(prid, partnerId)
+            .execute()
+        )
+        row = updated.data[0] if updated.data else None
+        if not row:
+            refetch = (
+                supabase.table("partners")
+                .select("*")
+                .eq(prid, partnerId)
+                .execute()
+            )
+            row = refetch.data[0] if refetch.data else None
+        if not row:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not read partner after update.",
+            )
+        return row
+    except HTTPException:
+        raise
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+
+
 # ─── PROTECTED: Approve Request ──────────────────────────────────
 
 
@@ -161,14 +345,14 @@ def approve_request(
 
         p_check = (
             supabase.table("participants")
-            .select("id")
-            .eq(k["p_investor"], introducer_id)
+            .select(k["p_participant"])
+            .eq(k["p_participant"], introducer_id)
             .execute()
         )
         a_check = (
             supabase.table("partners")
-            .select("id")
-            .eq(k["a_agent"], introducer_id)
+            .select(k["a_partner"])
+            .eq(k["a_partner"], introducer_id)
             .execute()
         )
         introducer_is_participant = bool(p_check.data)
@@ -199,7 +383,7 @@ def approve_request(
         if role == "participant":
             phone_exists = (
                 supabase.table("participants")
-                .select("id")
+                .select(k["p_participant"])
                 .eq(k["p_phone"], phone)
                 .execute()
             )
@@ -215,7 +399,7 @@ def approve_request(
                 )
 
             supabase.table("participants").insert({
-                k["p_investor"]: generate_investor_id(id_column=k["p_investor"]),
+                k["p_participant"]: generate_participant_id(id_column=k["p_participant"]),
                 k["p_name"]: name,
                 k["p_phone"]: phone,
                 k["p_email"]: "",
@@ -229,7 +413,7 @@ def approve_request(
         elif role == "partner":
             phone_exists = (
                 supabase.table("partners")
-                .select("id")
+                .select(k["a_partner"])
                 .eq(k["a_phone"], phone)
                 .execute()
             )
@@ -245,7 +429,7 @@ def approve_request(
                 )
 
             supabase.table("partners").insert({
-                k["a_agent"]: generate_agent_id(id_column=k["a_agent"]),
+                k["a_partner"]: generate_partner_id(id_column=k["a_partner"]),
                 k["a_name"]: name,
                 k["a_phone"]: phone,
                 k["a_email"]: "",
@@ -307,7 +491,7 @@ def approve_request(
     except APIError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=_format_api_error(e),
+            detail=format_api_error(e),
         ) from e
     except ValidationError as e:
         raise HTTPException(
@@ -319,16 +503,6 @@ def approve_request(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"{type(e).__name__}: {e}",
         ) from e
-
-
-def _format_api_error(e: APIError) -> str:
-    raw = e.args[0] if e.args else str(e)
-    if isinstance(raw, dict):
-        msg = raw.get("message") or str(raw)
-        if raw.get("details"):
-            msg = f"{msg} ({raw['details']})"
-        return msg
-    return str(raw)
 
 
 # ─── PROTECTED: Reject Request ───────────────────────────────────
@@ -395,7 +569,7 @@ def reject_request(
     except APIError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=_format_api_error(e),
+            detail=format_api_error(e),
         ) from e
     except ValidationError as e:
         raise HTTPException(

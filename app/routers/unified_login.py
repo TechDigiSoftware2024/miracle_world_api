@@ -41,16 +41,17 @@ def unified_login(payload: LoginRequest):
     )
     if participant.data:
         p = participant.data[0]
+        puid = str(p.get("participantId") or p.get("investorId") or "")
         token = create_token({
             "sub": p["phone"],
             "role": "participant",
-            "userId": p["investorId"],
+            "userId": puid,
             "name": p["name"],
         })
         return TokenResponse(
             access_token=token,
             role="participant",
-            userId=p["investorId"],
+            userId=puid,
             name=p["name"],
         )
 
@@ -63,16 +64,17 @@ def unified_login(payload: LoginRequest):
     )
     if partner.data:
         pr = partner.data[0]
+        pruid = str(pr.get("partnerId") or pr.get("agentId") or "")
         token = create_token({
             "sub": pr["phone"],
             "role": "partner",
-            "userId": pr["agentId"],
+            "userId": pruid,
             "name": pr["name"],
         })
         return TokenResponse(
             access_token=token,
             role="partner",
-            userId=pr["agentId"],
+            userId=pruid,
             name=pr["name"],
         )
 

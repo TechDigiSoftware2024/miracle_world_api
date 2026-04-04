@@ -1,11 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials
+from postgrest.exceptions import APIError
 
 from app.db.database import supabase
 from app.dependencies.auth import bearer_scheme, require_role
 from app.core.security import create_token, decode_token
-from app.schemas.partner import PartnerResponse
+from app.schemas.partner import PartnerResponse, PartnerUpdate
 from app.schemas.auth import LoginRequest, TokenResponse
+from app.utils.patch_payload import dump_update_or_400
+from app.utils.supabase_errors import format_api_error
 
 router = APIRouter(prefix="/partner", tags=["Partner"])
 
@@ -28,17 +31,18 @@ def partner_login(payload: LoginRequest):
         )
 
     partner = result.data[0]
+    uid = str(partner.get("partnerId") or partner.get("agentId") or "")
     token = create_token({
         "sub": partner["phone"],
         "role": "partner",
-        "userId": partner["agentId"],
+        "userId": uid,
         "name": partner["name"],
     })
 
     return TokenResponse(
         access_token=token,
         role="partner",
-        userId=partner["agentId"],
+        userId=uid,
         name=partner["name"],
     )
 
@@ -81,3 +85,43 @@ def get_partner_profile(
             detail="Partner not found",
         )
     return result.data[0]
+
+
+# ─── PROTECTED: Update profile (phone cannot be changed) ────────
+
+
+@router.patch("/profile", response_model=PartnerResponse)
+def patch_partner_profile(
+    payload: PartnerUpdate,
+    current_user: dict = Depends(require_role(["partner"])),
+):
+    data = dump_update_or_400(payload)
+    try:
+        updated = (
+            supabase.table("partners")
+            .update(data)
+            .eq("phone", current_user["sub"])
+            .execute()
+        )
+        row = updated.data[0] if updated.data else None
+        if not row:
+            refetch = (
+                supabase.table("partners")
+                .select("*")
+                .eq("phone", current_user["sub"])
+                .execute()
+            )
+            row = refetch.data[0] if refetch.data else None
+        if not row:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Partner not found",
+            )
+        return row
+    except HTTPException:
+        raise
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e

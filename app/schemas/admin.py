@@ -3,7 +3,6 @@ from datetime import datetime
 
 
 class AdminResponse(BaseModel):
-    id: int
     adminId: str
     name: str
     phone: str

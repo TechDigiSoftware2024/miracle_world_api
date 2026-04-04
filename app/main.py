@@ -7,6 +7,7 @@ from postgrest.exceptions import APIError
 
 from app.core.config import SUPABASE_KEY, SUPABASE_URL
 from app.db.database import supabase
+from app.utils.db_column_names import camel_participant_pk_column, camel_partner_pk_column
 
 from app.routers.request import router as request_router
 from app.routers.unified_login import router as unified_login_router
@@ -37,6 +38,8 @@ API_DESCRIPTION = """
 4. **Protected routes** need header: `Authorization: Bearer <access_token>` from login.
 5. In **Swagger UI**, click **Authorize**, paste the token only (not the word Bearer), then call admin endpoints.
 6. **Approve request**: `PUT /admin/request/{request_id}/approve` creates a row in **participants** or **partners** based on the request role and sets a new mpin on the request record.
+7. **Admin directory**: `GET /admin/participants`, `GET /admin/partners`; `DELETE` / `PATCH` use path **`participantId`** / **`partnerId`** (e.g. `MWP123456`, `MWCP123456`). Body cannot change **phone** or the string PK.
+8. **Self profile**: `PATCH /participant/profile` and `PATCH /partner/profile` (participant or partner token); same rule — **phone** cannot be updated (omit it from JSON; sending unknown keys returns 422).
 """
 
 app = FastAPI(
@@ -64,7 +67,7 @@ def seed_defaults() -> None:
         )
         return
 
-    result = supabase.table("admins").select("id").eq("phone", "9131718611").execute()
+    result = supabase.table("admins").select("adminId").eq("phone", "9131718611").execute()
     if not result.data:
         supabase.table("admins").insert({
             "adminId": "MWA000001",
@@ -74,10 +77,11 @@ def seed_defaults() -> None:
             "access_sections": "all",
         }).execute()
 
-    result = supabase.table("participants").select("id").eq("phone", "7030756931").execute()
+    pid = camel_participant_pk_column()
+    result = supabase.table("participants").select(pid).eq("phone", "7030756931").execute()
     if not result.data:
-        supabase.table("participants").insert({
-            "investorId": "MWP000001",
+        row = {
+            pid: "MWP000001",
             "name": "Miracle World Participant",
             "phone": "7030756931",
             "email": "",
@@ -85,12 +89,15 @@ def seed_defaults() -> None:
             "introducer": "SYSTEM",
             "mpin": "000000",
             "status": "active",
-        }).execute()
+            "totalInvestment": 0.0,
+        }
+        supabase.table("participants").insert(row).execute()
 
-    result = supabase.table("partners").select("id").eq("phone", "7030756931").execute()
+    prid = camel_partner_pk_column()
+    result = supabase.table("partners").select(prid).eq("phone", "7030756931").execute()
     if not result.data:
-        supabase.table("partners").insert({
-            "agentId": "MWCP000001",
+        row = {
+            prid: "MWCP000001",
             "name": "Miracle World Partner",
             "phone": "7030756931",
             "email": "",
@@ -104,7 +111,8 @@ def seed_defaults() -> None:
             "generatedProfitByTeam": 0.0,
             "totalDeals": 0,
             "totalTeamMembers": 0,
-        }).execute()
+        }
+        supabase.table("partners").insert(row).execute()
 
 
 try:
@@ -115,7 +123,13 @@ except (httpx.ConnectError, httpx.TimeoutException) as e:
         e,
     )
 except APIError as e:
+    raw = e.args[0] if e.args else e
     logger.warning("Supabase rejected seed_defaults (check SUPABASE_KEY): %s", e)
+    if isinstance(raw, dict) and raw.get("code") == "42703":
+        logger.warning(
+            "PostgREST reported an undefined column (42703). If you renamed tables manually, align "
+            "with repo supabase_tables.sql or run supabase_rename_legacy_id_columns.sql in Supabase SQL Editor."
+        )
 except Exception as e:
     logger.warning("seed_defaults failed: %s", e)
 

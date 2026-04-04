@@ -17,7 +17,7 @@ def check_admin_phone(payload: AdminPhoneCheckRequest):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Phone is required",
         )
-    result = supabase.table("admins").select("id").eq("phone", phone).execute()
+    result = supabase.table("admins").select("adminId").eq("phone", phone).execute()
     return AdminPhoneCheckResponse(is_admin=bool(result.data))
 
 

@@ -1,8 +1,10 @@
 -- Run this in Supabase Dashboard > SQL Editor to create all tables.
+-- String IDs (MWA / MWP / MWCP prefixes) are the primary keys for admins, participants, partners.
+-- If you already have the old schema (BIGINT id + investorId/agentId), run
+-- supabase_migration_bigint_pk_to_string_pk.sql instead of this file, or drop the old tables first.
 
 CREATE TABLE IF NOT EXISTS admins (
-    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    "adminId" TEXT UNIQUE NOT NULL,
+    "adminId" TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     phone TEXT UNIQUE NOT NULL,
     mpin TEXT NOT NULL,
@@ -12,8 +14,7 @@ CREATE TABLE IF NOT EXISTS admins (
 );
 
 CREATE TABLE IF NOT EXISTS participants (
-    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    "investorId" TEXT UNIQUE NOT NULL,
+    "participantId" TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     phone TEXT UNIQUE NOT NULL,
     email TEXT NOT NULL DEFAULT '',
@@ -30,8 +31,7 @@ CREATE TABLE IF NOT EXISTS participants (
 );
 
 CREATE TABLE IF NOT EXISTS partners (
-    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    "agentId" TEXT UNIQUE NOT NULL,
+    "partnerId" TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     phone TEXT UNIQUE NOT NULL,
     email TEXT NOT NULL DEFAULT '',
@@ -68,3 +68,24 @@ CREATE TABLE IF NOT EXISTS token_blacklist (
     jti TEXT UNIQUE NOT NULL,
     "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ─── Indexes (PK and UNIQUE already index those columns) ─────────
+-- Login: filter by phone + mpin on every auth request.
+CREATE INDEX IF NOT EXISTS idx_admins_phone_mpin ON admins (phone, mpin);
+CREATE INDEX IF NOT EXISTS idx_participants_phone_mpin ON participants (phone, mpin);
+CREATE INDEX IF NOT EXISTS idx_partners_phone_mpin ON partners (phone, mpin);
+
+-- Requests: UNIQUE(phone, role) already supports lookups by phone.
+-- Extra indexes for status queues and introducer reporting.
+CREATE INDEX IF NOT EXISTS idx_user_requests_status ON user_requests (status);
+CREATE INDEX IF NOT EXISTS idx_user_requests_status_id ON user_requests (status, id);
+CREATE INDEX IF NOT EXISTS idx_user_requests_introducer ON user_requests ("introducerId");
+
+-- Directory / reporting: who introduced whom (introducer holds partner or participant id).
+CREATE INDEX IF NOT EXISTS idx_participants_introducer ON participants (introducer);
+CREATE INDEX IF NOT EXISTS idx_partners_introducer ON partners (introducer);
+
+-- Optional filters (e.g. active-only lists).
+CREATE INDEX IF NOT EXISTS idx_participants_status ON participants (status);
+CREATE INDEX IF NOT EXISTS idx_partners_status ON partners (status);
+CREATE INDEX IF NOT EXISTS idx_admins_status ON admins (status);

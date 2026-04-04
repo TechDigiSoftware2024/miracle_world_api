@@ -18,9 +18,11 @@ def user_request_row_style(row: dict) -> str:
 
 
 def approve_keys(style: str) -> dict:
+    from app.utils.db_column_names import camel_participant_pk_column, camel_partner_pk_column
+
     if style == "snake":
         return {
-            "p_investor": "investor_id",
+            "p_participant": "participant_id",
             "p_phone": "phone",
             "p_name": "name",
             "p_email": "email",
@@ -29,7 +31,7 @@ def approve_keys(style: str) -> dict:
             "p_mpin": "mpin",
             "p_status": "status",
             "p_total": "total_investment",
-            "a_agent": "agent_id",
+            "a_partner": "partner_id",
             "a_phone": "phone",
             "a_name": "name",
             "a_email": "email",
@@ -51,7 +53,7 @@ def approve_keys(style: str) -> dict:
             "ur_updated": "updated_at",
         }
     return {
-        "p_investor": "investorId",
+        "p_participant": camel_participant_pk_column(),
         "p_phone": "phone",
         "p_name": "name",
         "p_email": "email",
@@ -60,7 +62,7 @@ def approve_keys(style: str) -> dict:
         "p_mpin": "mpin",
         "p_status": "status",
         "p_total": "totalInvestment",
-        "a_agent": "agentId",
+        "a_partner": camel_partner_pk_column(),
         "a_phone": "phone",
         "a_name": "name",
         "a_email": "email",
