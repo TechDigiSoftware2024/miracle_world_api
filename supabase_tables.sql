@@ -69,6 +69,18 @@ CREATE TABLE IF NOT EXISTS token_blacklist (
     "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Public "Contact us" form submissions (mirrors mobile Firestore contact_queries).
+CREATE TABLE IF NOT EXISTS contact_queries (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name TEXT NOT NULL,
+    email TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    message TEXT NOT NULL DEFAULT '',
+    "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_contact_queries_created ON contact_queries ("createdAt" DESC);
+
 -- ─── Indexes (PK and UNIQUE already index those columns) ─────────
 -- Login: filter by phone + mpin on every auth request.
 CREATE INDEX IF NOT EXISTS idx_admins_phone_mpin ON admins (phone, mpin);
