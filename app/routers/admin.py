@@ -15,6 +15,7 @@ from app.schemas.admin import AdminResponse
 from app.schemas.user_request import RequestResponse
 from app.schemas.participant import ParticipantResponse, ParticipantUpdate
 from app.schemas.partner import PartnerResponse, PartnerUpdate
+from app.schemas.contact import ContactQueryResponse
 from app.utils.id_generator import generate_participant_id, generate_partner_id
 from app.utils.db_column_names import camel_participant_pk_column, camel_partner_pk_column
 from app.utils.patch_payload import dump_update_or_400
@@ -110,6 +111,22 @@ def get_all_requests(
     current_user: dict = Depends(require_role(["admin"])),
 ):
     result = supabase.table("user_requests").select("*").order("id").execute()
+    return result.data
+
+
+# ─── PROTECTED: Contact form submissions ─────────────────────────
+
+
+@router.get("/contact-queries", response_model=List[ContactQueryResponse])
+def admin_list_contact_queries(
+    current_user: dict = Depends(require_role(["admin"])),
+):
+    result = (
+        supabase.table("contact_queries")
+        .select("*")
+        .order("createdAt", desc=True)
+        .execute()
+    )
     return result.data
 
 

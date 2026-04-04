@@ -1,6 +1,7 @@
 import re
+from datetime import datetime
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 
 class ContactUsRequest(BaseModel):
@@ -33,3 +34,14 @@ class ContactUsResponse(BaseModel):
     id: int
     email_sent: bool
     message: str
+
+
+class ContactQueryResponse(BaseModel):
+    id: int
+    name: str
+    email: str
+    phone: str
+    message: str
+    createdAt: datetime = Field(validation_alias=AliasChoices("createdAt", "created_at"))
+
+    model_config = {"extra": "ignore", "populate_by_name": True}

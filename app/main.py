@@ -42,7 +42,7 @@ API_DESCRIPTION = """
 6. **Protected routes** need header: `Authorization: Bearer <access_token>` from login.
 7. In **Swagger UI**, click **Authorize**, paste the token only (not the word Bearer), then call admin endpoints.
 8. **Approve request**: `PUT /admin/request/{request_id}/approve` creates a row in **participants** or **partners** based on the request role and sets a new mpin on the request record.
-9. **Admin directory**: `GET /admin/participants`, `GET /admin/partners`; `DELETE` / `PATCH` use path **`participantId`** / **`partnerId`** (e.g. `MWP123456`, `MWCP123456`). Body cannot change **phone** or the string PK.
+9. **Admin directory**: `GET /admin/participants`, `GET /admin/partners`, `GET /admin/contact-queries`; `DELETE` / `PATCH` use path **`participantId`** / **`partnerId`** (e.g. `MWP123456`, `MWCP123456`). Body cannot change **phone** or the string PK.
 10. **Self profile**: `PATCH /participant/profile` and `PATCH /partner/profile` (participant or partner token); same rule — **phone** cannot be updated (omit it from JSON; sending unknown keys returns 422).
 """
 
