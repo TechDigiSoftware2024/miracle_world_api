@@ -11,6 +11,7 @@ from app.utils.db_column_names import camel_participant_pk_column, camel_partner
 
 from app.routers.request import router as request_router
 from app.routers.contact import router as contact_router
+from app.routers.app_settings_public import router as app_settings_public_router
 from app.routers.unified_login import router as unified_login_router
 from app.routers.otp_auth import router as otp_auth_router
 from app.routers.admin import router as admin_router
@@ -35,15 +36,16 @@ def _supabase_key_is_configured(key: Optional[str]) -> bool:
 API_DESCRIPTION = """
 ## Flow
 1. **Contact (public)**: `POST /contact` with `name`, `email`, `phone` (10 digits), optional `message` — saves to Supabase `contact_queries`; optional SMTP notifies **CONTACT_NOTIFY_TO**.
-2. **New users** call `POST /request`, then `GET /track-request/{phone}`.
-3. **Optional**: `POST /check-admin-phone` with `{"phone":"..."}` returns `is_admin` so the UI can branch before mpin.
-4. **Login (MPIN)**: `POST /login` — phone + **mpin**; tries **admin → participant → partner**. Use `role` in the response for the app shell.
-5. **Login (OTP / MSG91)**: `POST /otp/send` → `POST /otp/login` with phone + **otp** (same JWT as MPIN login). Optional `POST /otp/retry`. Configure `MSG91_AUTH_KEY` and `MSG91_TEMPLATE_ID` on the server; Flutter should call **these** endpoints instead of embedding the MSG91 auth key in the app.
-6. **Protected routes** need header: `Authorization: Bearer <access_token>` from login.
-7. In **Swagger UI**, click **Authorize**, paste the token only (not the word Bearer), then call admin endpoints.
-8. **Approve request**: `PUT /admin/request/{request_id}/approve` creates a row in **participants** or **partners** based on the request role and sets a new mpin on the request record.
-9. **Admin directory**: `GET /admin/participants`, `GET /admin/partners`, `GET /admin/contact-queries`; `DELETE` / `PATCH` use path **`participantId`** / **`partnerId`** (e.g. `MWP123456`, `MWCP123456`). Body cannot change **phone** or the string PK.
-10. **Self profile**: `PATCH /participant/profile` and `PATCH /partner/profile` (participant or partner token); same rule — **phone** cannot be updated (omit it from JSON; sending unknown keys returns 422).
+2. **App settings**: Public `GET /settings` (company + default participant/partner IDs). Admin `GET /admin/settings` and `PATCH /admin/settings` to edit the same singleton row.
+3. **New users** call `POST /request`, then `GET /track-request/{phone}`.
+4. **Optional**: `POST /check-admin-phone` with `{"phone":"..."}` returns `is_admin` so the UI can branch before mpin.
+5. **Login (MPIN)**: `POST /login` — phone + **mpin**; tries **admin → participant → partner**. Use `role` in the response for the app shell.
+6. **Login (OTP / MSG91)**: `POST /otp/send` → `POST /otp/login` with phone + **otp** (same JWT as MPIN login). Optional `POST /otp/retry`. Configure `MSG91_AUTH_KEY` and `MSG91_TEMPLATE_ID` on the server; Flutter should call **these** endpoints instead of embedding the MSG91 auth key in the app.
+7. **Protected routes** need header: `Authorization: Bearer <access_token>` from login.
+8. In **Swagger UI**, click **Authorize**, paste the token only (not the word Bearer), then call admin endpoints.
+9. **Approve request**: `PUT /admin/request/{request_id}/approve` creates a row in **participants** or **partners** based on the request role and sets a new mpin on the request record.
+10. **Admin directory**: `GET /admin/participants`, `GET /admin/partners`, `GET /admin/contact-queries`, `GET /admin/settings`; `DELETE` / `PATCH` use path **`participantId`** / **`partnerId`** (e.g. `MWP123456`, `MWCP123456`). Body cannot change **phone** or the string PK.
+11. **Self profile**: `PATCH /participant/profile` and `PATCH /partner/profile` (participant or partner token); same rule — **phone** cannot be updated (omit it from JSON; sending unknown keys returns 422).
 """
 
 app = FastAPI(
@@ -118,6 +120,20 @@ def seed_defaults() -> None:
         }
         supabase.table("partners").insert(row).execute()
 
+    settings_row = (
+        supabase.table("app_settings").select("id").eq("id", 1).limit(1).execute()
+    )
+    if not settings_row.data:
+        supabase.table("app_settings").insert({
+            "id": 1,
+            "defaultPartnerId": "MWCP000001",
+            "defaultParticipantId": "MWP000001",
+            "companyName": "Miracle World Real Estate LLP",
+            "companyEmail": "info@miracleworldllp.com",
+            "companyPhone": "+91 6204599636",
+            "companyAddress": "906-907, Gera Imperium Alpha, Pune",
+        }).execute()
+
 
 try:
     seed_defaults()
@@ -139,6 +155,7 @@ except Exception as e:
 
 app.include_router(request_router)
 app.include_router(contact_router)
+app.include_router(app_settings_public_router)
 app.include_router(unified_login_router)
 app.include_router(otp_auth_router)
 app.include_router(admin_router)

@@ -81,6 +81,38 @@ CREATE TABLE IF NOT EXISTS contact_queries (
 
 CREATE INDEX IF NOT EXISTS idx_contact_queries_created ON contact_queries ("createdAt" DESC);
 
+-- Singleton row (id = 1): company branding + default introducer IDs for the app.
+CREATE TABLE IF NOT EXISTS app_settings (
+    id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    "defaultPartnerId" TEXT NOT NULL DEFAULT '',
+    "defaultParticipantId" TEXT NOT NULL DEFAULT '',
+    "companyName" TEXT NOT NULL DEFAULT '',
+    "companyEmail" TEXT NOT NULL DEFAULT '',
+    "companyPhone" TEXT NOT NULL DEFAULT '',
+    "companyAddress" TEXT NOT NULL DEFAULT '',
+    "updatedAt" TIMESTAMPTZ,
+    "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO app_settings (
+    id,
+    "defaultPartnerId",
+    "defaultParticipantId",
+    "companyName",
+    "companyEmail",
+    "companyPhone",
+    "companyAddress"
+) VALUES (
+    1,
+    'MWCP000001',
+    'MWP000001',
+    'Miracle World Real Estate LLP',
+    'info@miracleworldllp.com',
+    '+91 6204599636',
+    '906-907, Gera Imperium Alpha, Pune'
+)
+ON CONFLICT (id) DO NOTHING;
+
 -- ─── Indexes (PK and UNIQUE already index those columns) ─────────
 -- Login: filter by phone + mpin on every auth request.
 CREATE INDEX IF NOT EXISTS idx_admins_phone_mpin ON admins (phone, mpin);

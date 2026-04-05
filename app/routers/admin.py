@@ -16,10 +16,12 @@ from app.schemas.user_request import RequestResponse
 from app.schemas.participant import ParticipantResponse, ParticipantUpdate
 from app.schemas.partner import PartnerResponse, PartnerUpdate
 from app.schemas.contact import ContactQueryResponse
+from app.schemas.app_settings import AppSettingsResponse, AppSettingsUpdate
 from app.utils.id_generator import generate_participant_id, generate_partner_id
 from app.utils.db_column_names import camel_participant_pk_column, camel_partner_pk_column
 from app.utils.patch_payload import dump_update_or_400
 from app.utils.supabase_errors import format_api_error
+from app.utils.app_settings_repo import fetch_app_settings_row
 from app.utils.supabase_columns import (
     approve_keys,
     introducer_id_from_row,
@@ -128,6 +130,67 @@ def admin_list_contact_queries(
         .execute()
     )
     return result.data
+
+
+# ─── PROTECTED: App settings (company + default introducer IDs) ──
+
+
+@router.get("/settings", response_model=AppSettingsResponse)
+def admin_get_app_settings(
+    current_user: dict = Depends(require_role(["admin"])),
+):
+    row = fetch_app_settings_row()
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="app_settings row missing. Run supabase_app_settings_table.sql in Supabase.",
+        )
+    return AppSettingsResponse.model_validate(row)
+
+
+@router.patch("/settings", response_model=AppSettingsResponse)
+def admin_patch_app_settings(
+    payload: AppSettingsUpdate,
+    current_user: dict = Depends(require_role(["admin"])),
+):
+    if not fetch_app_settings_row():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="app_settings row missing. Run supabase_app_settings_table.sql in Supabase.",
+        )
+    data = dump_update_or_400(payload)
+    now = datetime.now(timezone.utc).isoformat()
+    patch = {**data, "updatedAt": now}
+    try:
+        updated = (
+            supabase.table("app_settings")
+            .update(patch)
+            .eq("id", 1)
+            .execute()
+        )
+        row = updated.data[0] if updated.data else None
+        if not row:
+            refetch = (
+                supabase.table("app_settings")
+                .select("*")
+                .eq("id", 1)
+                .limit(1)
+                .execute()
+            )
+            row = refetch.data[0] if refetch.data else None
+        if not row:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not read app_settings after update.",
+            )
+        return AppSettingsResponse.model_validate(row)
+    except HTTPException:
+        raise
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
 
 
 # ─── PROTECTED: Participants & partners (list / delete / patch) ─
