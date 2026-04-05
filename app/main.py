@@ -37,7 +37,7 @@ API_DESCRIPTION = """
 ## Flow
 1. **Contact (public)**: `POST /contact` with `name`, `email`, `phone` (10 digits), optional `message` — saves to Supabase `contact_queries`; optional SMTP notifies **CONTACT_NOTIFY_TO**.
 2. **App settings**: Public `GET /settings` (company + default participant/partner IDs). Admin `GET /admin/settings` and `PATCH /admin/settings` to edit the same singleton row.
-3. **New users** call `POST /request`, then `GET /track-request/{phone}`.
+3. **New users** call `POST /request`, then `GET /track-request/{phone}` (each item includes **id**). Public `DELETE /request/{request_id}?phone=...` removes a request when **phone** matches that row.
 4. **Optional**: `POST /check-admin-phone` with `{"phone":"..."}` returns `is_admin` so the UI can branch before mpin.
 5. **Login (MPIN)**: `POST /login` — phone + **mpin**; tries **admin → participant → partner**. Use `role` in the response for the app shell.
 6. **Login (OTP / MSG91)**: `POST /otp/send` → `POST /otp/login` with phone + **otp** (same JWT as MPIN login). Optional `POST /otp/retry`. Configure `MSG91_AUTH_KEY` and `MSG91_TEMPLATE_ID` on the server; Flutter should call **these** endpoints instead of embedding the MSG91 auth key in the app.
@@ -120,19 +120,35 @@ def seed_defaults() -> None:
         }
         supabase.table("partners").insert(row).execute()
 
-    settings_row = (
-        supabase.table("app_settings").select("id").eq("id", 1).limit(1).execute()
-    )
-    if not settings_row.data:
-        supabase.table("app_settings").insert({
-            "id": 1,
-            "defaultPartnerId": "MWCP000001",
-            "defaultParticipantId": "MWP000001",
-            "companyName": "Miracle World Real Estate LLP",
-            "companyEmail": "info@miracleworldllp.com",
-            "companyPhone": "+91 6204599636",
-            "companyAddress": "906-907, Gera Imperium Alpha, Pune",
-        }).execute()
+    try:
+        settings_row = (
+            supabase.table("app_settings").select("id").eq("id", 1).limit(1).execute()
+        )
+        if not settings_row.data:
+            supabase.table("app_settings").insert({
+                "id": 1,
+                "defaultPartnerId": "MWCP000001",
+                "defaultParticipantId": "MWP000001",
+                "companyName": "Miracle World Real Estate LLP",
+                "companyEmail": "info@miracleworldllp.com",
+                "companyPhone": "+91 6204599636",
+                "companyAddress": "906-907, Gera Imperium Alpha, Pune",
+            }).execute()
+    except APIError as e:
+        raw = e.args[0] if e.args else {}
+        code = raw.get("code") if isinstance(raw, dict) else None
+        missing_table = code == "PGRST205" or (
+            isinstance(raw, dict)
+            and "app_settings" in (raw.get("message") or "").lower()
+        )
+        if missing_table:
+            logger.warning(
+                "app_settings table not found; skipped seed for that table. "
+                "Run repo file supabase_app_settings_table.sql in Supabase SQL Editor, then restart. "
+                "GET /settings and /admin/settings will 404 until then."
+            )
+        else:
+            raise
 
 
 try:
@@ -149,6 +165,11 @@ except APIError as e:
         logger.warning(
             "PostgREST reported an undefined column (42703). If you renamed tables manually, align "
             "with repo supabase_tables.sql or run supabase_rename_legacy_id_columns.sql in Supabase SQL Editor."
+        )
+    if isinstance(raw, dict) and raw.get("code") == "PGRST205":
+        logger.warning(
+            "PostgREST could not find a table (PGRST205). Create missing tables from repo SQL files "
+            "(e.g. supabase_app_settings_table.sql, supabase_contact_queries_table.sql)."
         )
 except Exception as e:
     logger.warning("seed_defaults failed: %s", e)

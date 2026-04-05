@@ -52,6 +52,7 @@ class RequestResponse(BaseModel):
 class TrackResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
+    id: int
     name: str
     phone: str
     role: str
@@ -62,3 +63,15 @@ class TrackResponse(BaseModel):
         default=None,
         validation_alias=AliasChoices("updatedAt", "updated_at"),
     )
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def coerce_track_id(cls, v: Any) -> Any:
+        if v is None:
+            return v
+        return int(v)
+
+
+class UserRequestDeleteResponse(BaseModel):
+    message: str
+    id: int

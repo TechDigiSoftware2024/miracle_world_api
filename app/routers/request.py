@@ -1,10 +1,18 @@
 from typing import List
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
+from postgrest.exceptions import APIError
 
 from app.db.database import supabase
-from app.schemas.user_request import RequestCreate, RequestResponse, TrackResponse
+from app.schemas.user_request import (
+    RequestCreate,
+    RequestResponse,
+    TrackResponse,
+    UserRequestDeleteResponse,
+)
 from app.schemas.auth import AdminPhoneCheckRequest, AdminPhoneCheckResponse
+from app.utils.phone_normalize import normalize_phone_digits
+from app.utils.supabase_errors import format_api_error
 
 router = APIRouter(tags=["Public"])
 
@@ -55,6 +63,63 @@ def create_request(payload: RequestCreate):
         .execute()
     )
     return result.data[0]
+
+
+@router.delete(
+    "/request/{request_id}",
+    response_model=UserRequestDeleteResponse,
+)
+def delete_user_request(
+    request_id: int,
+    phone: str = Query(
+        ...,
+        description="Must match the phone on this request (same as used when submitting).",
+    ),
+):
+    """
+    Public: remove a signup request by id. **phone** must match the stored row (reduces blind deletes).
+    Use **id** from `GET /track-request/{phone}`.
+    """
+    if not phone.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="phone query parameter is required",
+        )
+    try:
+        existing = (
+            supabase.table("user_requests")
+            .select("id", "phone")
+            .eq("id", request_id)
+            .execute()
+        )
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+
+    if not existing.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Request not found",
+        )
+
+    row_phone = existing.data[0].get("phone") or ""
+    if normalize_phone_digits(row_phone) != normalize_phone_digits(phone):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Request not found",
+        )
+
+    try:
+        supabase.table("user_requests").delete().eq("id", request_id).execute()
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+
+    return UserRequestDeleteResponse(message="Request deleted", id=request_id)
 
 
 @router.get("/track-request/{phone}", response_model=List[TrackResponse])
