@@ -17,6 +17,8 @@ from app.routers.otp_auth import router as otp_auth_router
 from app.routers.admin import router as admin_router
 from app.routers.participant import router as participant_router
 from app.routers.partner import router as partner_router
+from app.routers.fund_types_public import router as fund_types_public_router
+from app.routers.fund_types_admin import router as fund_types_admin_router
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +46,7 @@ API_DESCRIPTION = """
 7. **Protected routes** need header: `Authorization: Bearer <access_token>` from login.
 8. In **Swagger UI**, click **Authorize**, paste the token only (not the word Bearer), then call admin endpoints.
 9. **Approve request**: `PUT /admin/request/{request_id}/approve` creates a row in **participants** or **partners** based on the request role and sets a new mpin on the request record.
-10. **Admin directory**: `GET /admin/participants`, `GET /admin/partners`, `GET /admin/contact-queries`, `GET /admin/settings`; `DELETE` / `PATCH` use path **`participantId`** / **`partnerId`** (e.g. `MWP123456`, `MWCP123456`). Body cannot change **phone** or the string PK.
+10. **Admin directory**: Participants/partners/contact-queries/settings; user `DELETE`/`PATCH` by **`participantId`** / **`partnerId`**. **Fund types (admin)**: `GET|POST /admin/fund-types`, `GET|PATCH|DELETE /admin/fund-types/{fund_id}` — `description` is a **JSON array of strings**. **Fund types (public, no token)**: `GET /fund-types` and `GET /fund-types/{fund_id}` for user/participant dashboards — **active** funds only.
 11. **Self profile**: `PATCH /participant/profile` and `PATCH /partner/profile` (participant or partner token); same rule — **phone** cannot be updated (omit it from JSON; sending unknown keys returns 422).
 """
 
@@ -169,7 +171,7 @@ except APIError as e:
     if isinstance(raw, dict) and raw.get("code") == "PGRST205":
         logger.warning(
             "PostgREST could not find a table (PGRST205). Create missing tables from repo SQL files "
-            "(e.g. supabase_app_settings_table.sql, supabase_contact_queries_table.sql)."
+            "(e.g. supabase_app_settings_table.sql, supabase_contact_queries_table.sql, supabase_fund_types_table.sql)."
         )
 except Exception as e:
     logger.warning("seed_defaults failed: %s", e)
@@ -177,9 +179,11 @@ except Exception as e:
 app.include_router(request_router)
 app.include_router(contact_router)
 app.include_router(app_settings_public_router)
+app.include_router(fund_types_public_router)
 app.include_router(unified_login_router)
 app.include_router(otp_auth_router)
 app.include_router(admin_router)
+app.include_router(fund_types_admin_router, prefix="/admin")
 app.include_router(participant_router)
 app.include_router(partner_router)
 
