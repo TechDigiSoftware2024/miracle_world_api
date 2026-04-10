@@ -1,5 +1,3 @@
-from typing import List
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials
 from postgrest.exceptions import APIError
@@ -9,7 +7,6 @@ from app.dependencies.auth import bearer_scheme, require_role
 from app.core.security import create_token, decode_token
 from app.schemas.participant import ParticipantResponse, ParticipantUpdate
 from app.schemas.auth import LoginRequest, TokenResponse
-from app.schemas.schedule_visit import ScheduleVisitCreate, ScheduleVisitResponse
 from app.utils.patch_payload import dump_update_or_400
 from app.utils.supabase_errors import format_api_error
 
@@ -121,110 +118,6 @@ def patch_participant_profile(
                 detail="Participant not found",
             )
         return row
-    except HTTPException:
-        raise
-    except APIError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=format_api_error(e),
-        ) from e
-
-
-@router.post("/schedule-visits", response_model=ScheduleVisitResponse, status_code=status.HTTP_201_CREATED)
-def create_schedule_visit(
-    payload: ScheduleVisitCreate,
-    current_user: dict = Depends(require_role(["participant"])),
-):
-    try:
-        row = {
-            "visitorName": payload.visitorName.strip(),
-            "alternatePhone": (payload.alternatePhone or "").strip() or None,
-            "selectedDate": payload.selectedDate.strip(),
-            "visitTime": payload.visitTime.strip(),
-            # Always trust userId from token, not request body
-            "userId": str(current_user.get("userId") or "").strip(),
-            "propertyId": payload.propertyId.strip(),
-            "propertyName": payload.propertyName.strip(),
-        }
-        if not row["userId"]:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token payload: missing userId",
-            )
-
-        result = supabase.table("schedule_visits").insert(row).execute()
-        created = result.data[0] if result.data else None
-        if not created:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Could not read schedule visit after insert.",
-            )
-        return created
-    except HTTPException:
-        raise
-    except APIError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=format_api_error(e),
-        ) from e
-
-
-@router.get("/schedule-visits", response_model=List[ScheduleVisitResponse])
-def list_my_schedule_visits(
-    current_user: dict = Depends(require_role(["participant"])),
-):
-    try:
-        user_id = str(current_user.get("userId") or "").strip()
-        if not user_id:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token payload: missing userId",
-            )
-        result = (
-            supabase.table("schedule_visits")
-            .select("*")
-            .eq("userId", user_id)
-            .order("createdAt", desc=True)
-            .execute()
-        )
-        return result.data
-    except HTTPException:
-        raise
-    except APIError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=format_api_error(e),
-        ) from e
-
-
-@router.delete("/schedule-visits/{visit_id}")
-def delete_my_schedule_visit(
-    visit_id: int,
-    current_user: dict = Depends(require_role(["participant"])),
-):
-    try:
-        user_id = str(current_user.get("userId") or "").strip()
-        if not user_id:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token payload: missing userId",
-            )
-
-        existing = (
-            supabase.table("schedule_visits")
-            .select("id,userId")
-            .eq("id", visit_id)
-            .eq("userId", user_id)
-            .execute()
-        )
-        if not existing.data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Schedule visit not found",
-            )
-
-        supabase.table("schedule_visits").delete().eq("id", visit_id).eq("userId", user_id).execute()
-        return {"message": "Schedule visit deleted", "id": visit_id}
     except HTTPException:
         raise
     except APIError as e:

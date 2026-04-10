@@ -17,7 +17,6 @@ from app.schemas.participant import ParticipantResponse, ParticipantUpdate
 from app.schemas.partner import PartnerResponse, PartnerUpdate
 from app.schemas.contact import ContactQueryResponse
 from app.schemas.app_settings import AppSettingsResponse, AppSettingsUpdate
-from app.schemas.schedule_visit import ScheduleVisitResponse
 from app.utils.id_generator import generate_participant_id, generate_partner_id
 from app.utils.db_column_names import camel_participant_pk_column, camel_partner_pk_column
 from app.utils.patch_payload import dump_update_or_400
@@ -131,47 +130,6 @@ def admin_list_contact_queries(
         .execute()
     )
     return result.data
-
-
-@router.get("/schedule-visits", response_model=List[ScheduleVisitResponse])
-def admin_list_schedule_visits(
-    current_user: dict = Depends(require_role(["admin"])),
-):
-    result = (
-        supabase.table("schedule_visits")
-        .select("*")
-        .order("createdAt", desc=True)
-        .execute()
-    )
-    return result.data
-
-
-@router.delete("/schedule-visits/{visit_id}")
-def admin_delete_schedule_visit(
-    visit_id: int,
-    current_user: dict = Depends(require_role(["admin"])),
-):
-    try:
-        existing = (
-            supabase.table("schedule_visits")
-            .select("id")
-            .eq("id", visit_id)
-            .execute()
-        )
-        if not existing.data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Schedule visit not found",
-            )
-        supabase.table("schedule_visits").delete().eq("id", visit_id).execute()
-        return {"message": "Schedule visit deleted", "id": visit_id}
-    except HTTPException:
-        raise
-    except APIError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=format_api_error(e),
-        ) from e
 
 
 # ─── PROTECTED: App settings (company + default introducer IDs) ──
