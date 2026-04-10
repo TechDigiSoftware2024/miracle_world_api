@@ -7,6 +7,11 @@ from app.dependencies.auth import bearer_scheme, require_role
 from app.core.security import create_token, decode_token
 from app.schemas.participant import ParticipantResponse, ParticipantUpdate
 from app.schemas.auth import LoginRequest, TokenResponse
+from app.schemas.schedule_visit import (
+    ScheduleVisitCreate,
+    ScheduleVisitDeleteResponse,
+    ScheduleVisitResponse,
+)
 from app.utils.patch_payload import dump_update_or_400
 from app.utils.supabase_errors import format_api_error
 
@@ -118,6 +123,97 @@ def patch_participant_profile(
                 detail="Participant not found",
             )
         return row
+    except HTTPException:
+        raise
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+
+
+@router.post(
+    "/schedule-visits",
+    response_model=ScheduleVisitResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def participant_create_schedule_visit(
+    payload: ScheduleVisitCreate,
+    current_user: dict = Depends(require_role(["participant"])),
+):
+    if str(payload.userId).strip() != str(current_user.get("userId", "")).strip():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can create visits only for your own userId",
+        )
+    try:
+        created = (
+            supabase.table("schedule_visits")
+            .insert(payload.model_dump())
+            .execute()
+        )
+        if not created.data:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create schedule visit",
+            )
+        return created.data[0]
+    except HTTPException:
+        raise
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+
+
+@router.get("/schedule-visits", response_model=list[ScheduleVisitResponse])
+def participant_get_schedule_visits(
+    current_user: dict = Depends(require_role(["participant"])),
+):
+    try:
+        result = (
+            supabase.table("schedule_visits")
+            .select("*")
+            .eq("userId", str(current_user.get("userId", "")))
+            .order("createdAt", desc=True)
+            .execute()
+        )
+        return result.data or []
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+
+
+@router.delete(
+    "/schedule-visits/{visit_id}",
+    response_model=ScheduleVisitDeleteResponse,
+)
+def participant_delete_schedule_visit(
+    visit_id: int,
+    current_user: dict = Depends(require_role(["participant"])),
+):
+    try:
+        existing = (
+            supabase.table("schedule_visits")
+            .select("id,userId")
+            .eq("id", visit_id)
+            .execute()
+        )
+        if not existing.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Schedule visit not found",
+            )
+        if str(existing.data[0].get("userId", "")).strip() != str(current_user.get("userId", "")).strip():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can delete only your own schedule visits",
+            )
+        supabase.table("schedule_visits").delete().eq("id", visit_id).execute()
+        return ScheduleVisitDeleteResponse(message="Schedule visit deleted", id=visit_id)
     except HTTPException:
         raise
     except APIError as e:
