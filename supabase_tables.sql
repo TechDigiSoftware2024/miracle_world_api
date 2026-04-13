@@ -128,8 +128,7 @@ CREATE TABLE IF NOT EXISTS fund_types (
     "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
     "updatedAt" TIMESTAMPTZ,
     "durationType" TEXT NOT NULL DEFAULT '',
-    "durationMonths" INT,
-    "durationYears" INT,
+    "duration" INT,
     notes TEXT NOT NULL DEFAULT '',
     description JSONB NOT NULL DEFAULT '[]'::jsonb
 );

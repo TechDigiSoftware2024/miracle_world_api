@@ -36,8 +36,11 @@ class FundTypeCreate(BaseModel):
     maximumROI: Optional[float] = None
     status: str = Field(default="active", max_length=50)
     durationType: str = Field(default="", max_length=100)
-    durationMonths: Optional[int] = Field(default=None, ge=0)
-    durationYears: Optional[int] = Field(default=None, ge=0)
+    duration: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Total duration in months only (not years).",
+    )
     notes: str = Field(default="", max_length=10000)
     description: list[str] = Field(
         default_factory=list,
@@ -76,8 +79,11 @@ class FundTypeUpdate(BaseModel):
     maximumROI: Optional[float] = None
     status: Optional[str] = Field(default=None, max_length=50)
     durationType: Optional[str] = Field(default=None, max_length=100)
-    durationMonths: Optional[int] = Field(default=None, ge=0)
-    durationYears: Optional[int] = Field(default=None, ge=0)
+    duration: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Total duration in months only (not years).",
+    )
     notes: Optional[str] = Field(default=None, max_length=10000)
     description: Optional[list[str]] = None
 
@@ -141,11 +147,9 @@ class FundTypeResponse(BaseModel):
     durationType: str = Field(
         default="", validation_alias=AliasChoices("durationType", "duration_type")
     )
-    durationMonths: Optional[int] = Field(
-        default=None, validation_alias=AliasChoices("durationMonths", "duration_months")
-    )
-    durationYears: Optional[int] = Field(
-        default=None, validation_alias=AliasChoices("durationYears", "duration_years")
+    duration: Optional[int] = Field(
+        default=None,
+        description="Total duration in months only.",
     )
     notes: str = ""
     description: list[str] = Field(default_factory=list)
@@ -179,4 +183,13 @@ class FundTypeResponse(BaseModel):
             out["description"] = []
         else:
             out["description"] = [str(x) for x in desc]
+        if out.get("duration") is None and (
+            out.get("durationMonths") is not None or out.get("durationYears") is not None
+        ):
+            m = out.get("durationMonths") or out.get("duration_months")
+            y = out.get("durationYears") or out.get("duration_years")
+            if m is None and y is None:
+                out["duration"] = None
+            else:
+                out["duration"] = int(m or 0) + int(y or 0) * 12
         return out

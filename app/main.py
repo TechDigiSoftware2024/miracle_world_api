@@ -48,7 +48,7 @@ API_DESCRIPTION = """
 7. **Protected routes** need header: `Authorization: Bearer <access_token>` from login.
 8. In **Swagger UI**, click **Authorize**, paste the token only (not the word Bearer), then call admin endpoints.
 9. **Approve request**: `PUT /admin/request/{request_id}/approve` creates a row in **participants** or **partners** based on the request role and sets a new mpin on the request record.
-10. **Admin directory**: Participants/partners/contact-queries/settings; user `DELETE`/`PATCH` by **`participantId`** / **`partnerId`**. **Fund types**: admin CRUD under `/admin/fund-types`; public `GET /fund-types` (active only). **Properties**: admin `GET|POST /admin/properties`, `GET|PATCH|DELETE /admin/properties/{id}`; **public (no token)** `GET /properties` (optional `?status=&type=&purpose=&city=`) and `GET /properties/{id}` for participant dashboards.
+10. **Admin directory**: Participants/partners/contact-queries/settings; user `DELETE`/`PATCH` by **`participantId`** / **`partnerId`**. **Fund types**: admin CRUD under `/admin/fund-types` (body field **`duration`** is total months only); public `GET /fund-types` (active only). **Properties**: admin `GET|POST /admin/properties`, `GET|PATCH|DELETE /admin/properties/{id}`; **public (no token)** `GET /properties` (optional `?status=&type=&purpose=&city=`) and `GET /properties/{id}` for participant dashboards.
 11. **Self profile**: `PATCH /participant/profile` and `PATCH /partner/profile` (participant or partner token); same rule — **phone** cannot be updated (omit it from JSON; sending unknown keys returns 422).
 """
 
