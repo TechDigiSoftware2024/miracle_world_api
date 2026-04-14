@@ -21,6 +21,8 @@ from app.routers.fund_types_public import router as fund_types_public_router
 from app.routers.fund_types_admin import router as fund_types_admin_router
 from app.routers.properties_public import router as properties_public_router
 from app.routers.properties_admin import router as properties_admin_router
+from app.routers.bank_details_user import router as bank_details_user_router
+from app.routers.bank_details_admin import router as bank_details_admin_router
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,7 @@ API_DESCRIPTION = """
 9. **Approve request**: `PUT /admin/request/{request_id}/approve` creates a row in **participants** or **partners** based on the request role and sets a new mpin on the request record.
 10. **Admin directory**: Participants/partners/contact-queries/settings; user `DELETE`/`PATCH` by **`participantId`** / **`partnerId`**. **Fund types**: admin CRUD under `/admin/fund-types` (body field **`duration`** is total months only); public `GET /fund-types` (active only). **Properties**: admin `GET|POST /admin/properties`, `GET|PATCH|DELETE /admin/properties/{id}`; **public (no token)** `GET /properties` (optional `?status=&type=&purpose=&city=`) and `GET /properties/{id}` for participant dashboards.
 11. **Self profile**: `PATCH /participant/profile` and `PATCH /partner/profile` (participant or partner token); same rule — **phone** cannot be updated (omit it from JSON; sending unknown keys returns 422).
+12. **Bank details**: User `GET /bank-details/user/{userId}` (participant/partner own `userId` from login, or admin), `POST /bank-details`, `PUT /bank-details/{id}`. Admin `GET /admin/bank-details/pending`, `GET /admin/bank-details/{id}`, `PATCH /admin/bank-details/{id}/status`. Create table from `supabase_bank_details_table.sql`.
 """
 
 app = FastAPI(
@@ -173,7 +176,8 @@ except APIError as e:
     if isinstance(raw, dict) and raw.get("code") == "PGRST205":
         logger.warning(
             "PostgREST could not find a table (PGRST205). Create missing tables from repo SQL files "
-            "(e.g. supabase_app_settings_table.sql, supabase_contact_queries_table.sql, supabase_fund_types_table.sql, supabase_properties_table.sql)."
+            "(e.g. supabase_app_settings_table.sql, supabase_contact_queries_table.sql, "
+            "supabase_fund_types_table.sql, supabase_properties_table.sql, supabase_bank_details_table.sql)."
         )
 except Exception as e:
     logger.warning("seed_defaults failed: %s", e)
@@ -188,6 +192,8 @@ app.include_router(otp_auth_router)
 app.include_router(admin_router)
 app.include_router(fund_types_admin_router, prefix="/admin")
 app.include_router(properties_admin_router, prefix="/admin")
+app.include_router(bank_details_user_router)
+app.include_router(bank_details_admin_router, prefix="/admin")
 app.include_router(participant_router)
 app.include_router(partner_router)
 
