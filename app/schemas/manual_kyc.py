@@ -4,12 +4,12 @@ from typing import Literal, Optional
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 
-ManualKycType = Literal["PAN", "AADHAAR"]
+ManualKycType = Literal["PAN", "AADHAAR", "Both"]
 ManualKycStatus = Literal["Pending", "Verified", "Rejected"]
 
 
 class ManualKycCreate(BaseModel):
-    """Submit PAN or Aadhaar KYC with a document URL (e.g. Supabase Storage public URL)."""
+    """Submit PAN, Aadhaar, or both with document URLs (e.g. Supabase Storage public URL)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -28,11 +28,20 @@ class ManualKycCreate(BaseModel):
                 raise ValueError("panNumber is required when kycType is PAN")
             if not self.panDocumentUrl.strip():
                 raise ValueError("panDocumentUrl is required when kycType is PAN")
-        else:
+        elif self.kycType == "AADHAAR":
             if not self.aadhaarNumber.strip():
                 raise ValueError("aadhaarNumber is required when kycType is AADHAAR")
             if not self.aadhaarDocumentUrl.strip():
                 raise ValueError("aadhaarDocumentUrl is required when kycType is AADHAAR")
+        else:
+            if not self.panNumber.strip():
+                raise ValueError("panNumber is required when kycType is Both")
+            if not self.panDocumentUrl.strip():
+                raise ValueError("panDocumentUrl is required when kycType is Both")
+            if not self.aadhaarNumber.strip():
+                raise ValueError("aadhaarNumber is required when kycType is Both")
+            if not self.aadhaarDocumentUrl.strip():
+                raise ValueError("aadhaarDocumentUrl is required when kycType is Both")
         return self
 
 

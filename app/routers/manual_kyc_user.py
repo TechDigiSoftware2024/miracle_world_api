@@ -59,6 +59,27 @@ def _validate_merged_kyc(row: dict) -> None:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="aadhaarDocumentUrl is required when kycType is AADHAAR",
             )
+    elif t == "Both":
+        if not str(row.get("panNumber", "")).strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="panNumber is required when kycType is Both",
+            )
+        if not str(row.get("panDocumentUrl", "")).strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="panDocumentUrl is required when kycType is Both",
+            )
+        if not str(row.get("aadhaarNumber", "")).strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="aadhaarNumber is required when kycType is Both",
+            )
+        if not str(row.get("aadhaarDocumentUrl", "")).strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="aadhaarDocumentUrl is required when kycType is Both",
+            )
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

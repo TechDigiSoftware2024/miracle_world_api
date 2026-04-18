@@ -1,4 +1,4 @@
--- Manual KYC (PAN or Aadhaar + document URL). One row per app user (JWT `userId`).
+-- Manual KYC (PAN, Aadhaar, or Both + document URLs). One row per app user (JWT `userId`).
 -- Run in Supabase SQL Editor.
 
 CREATE TABLE IF NOT EXISTS manual_kyc (
@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS manual_kyc (
     "updatedAt" TIMESTAMPTZ,
     "verifiedBy" TEXT REFERENCES admins ("adminId") ON DELETE SET NULL,
     "verifiedAt" TIMESTAMPTZ,
-    CONSTRAINT manual_kyc_type_chk CHECK ("kycType" IN ('PAN', 'AADHAAR')),
+    CONSTRAINT manual_kyc_type_chk CHECK ("kycType" IN ('PAN', 'AADHAAR', 'Both')),
     CONSTRAINT manual_kyc_status_chk CHECK (status IN ('Pending', 'Verified', 'Rejected')),
     CONSTRAINT manual_kyc_user_unique UNIQUE ("userId")
 );
