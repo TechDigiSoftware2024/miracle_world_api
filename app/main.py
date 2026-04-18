@@ -25,6 +25,8 @@ from app.routers.bank_details_user import router as bank_details_user_router
 from app.routers.bank_details_admin import router as bank_details_admin_router
 from app.routers.nominee_user import router as nominee_user_router
 from app.routers.nominee_admin import router as nominee_admin_router
+from app.routers.manual_kyc_user import router as manual_kyc_user_router
+from app.routers.manual_kyc_admin import router as manual_kyc_admin_router
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,7 @@ API_DESCRIPTION = """
 11. **Self profile**: `PATCH /participant/profile` and `PATCH /partner/profile` (participant or partner token); same rule — **phone** cannot be updated (omit it from JSON; sending unknown keys returns 422).
 12. **Bank details**: User `GET /bank-details/user/{userId}` (participant/partner own `userId` from login, or admin), `POST /bank-details`, `PUT /bank-details/{id}`. Admin `GET /admin/bank-details/pending`, `GET /admin/bank-details/{id}`, `PATCH /admin/bank-details/{id}/status`. Create table from `supabase_bank_details_table.sql`.
 13. **Nominees**: User `GET /nominees/user/{userId}`, `POST /nominees`, `PUT /nominees/{id}`. Admin `GET /admin/nominees`, `GET /admin/nominees/pending`, `GET /admin/nominees/user/{userId}`, `GET /admin/nominees/{id}`, `PATCH /admin/nominees/{id}/status`, `DELETE /admin/nominees/{id}`. Create table from `supabase_nominees_table.sql`.
+14. **Manual KYC**: User `GET /manual-kyc/user/{userId}`, `POST /manual-kyc` (PAN or AADHAAR + document URL), `PUT /manual-kyc/{id}`. Admin `GET /admin/manual-kyc`, `GET /admin/manual-kyc/pending`, `GET /admin/manual-kyc/user/{userId}`, `GET /admin/manual-kyc/{id}`, `PATCH /admin/manual-kyc/{id}/status`, `DELETE /admin/manual-kyc/{id}`. Create table from `supabase_manual_kyc_table.sql`.
 """
 
 app = FastAPI(
@@ -181,7 +184,7 @@ except APIError as e:
             "PostgREST could not find a table (PGRST205). Create missing tables from repo SQL files "
             "(e.g. supabase_app_settings_table.sql, supabase_contact_queries_table.sql, "
             "supabase_fund_types_table.sql, supabase_properties_table.sql, supabase_bank_details_table.sql, "
-            "supabase_nominees_table.sql)."
+            "supabase_nominees_table.sql, supabase_manual_kyc_table.sql)."
         )
 except Exception as e:
     logger.warning("seed_defaults failed: %s", e)
@@ -200,6 +203,8 @@ app.include_router(bank_details_user_router)
 app.include_router(bank_details_admin_router, prefix="/admin")
 app.include_router(nominee_user_router)
 app.include_router(nominee_admin_router, prefix="/admin")
+app.include_router(manual_kyc_user_router)
+app.include_router(manual_kyc_admin_router, prefix="/admin")
 app.include_router(participant_router)
 app.include_router(partner_router)
 
