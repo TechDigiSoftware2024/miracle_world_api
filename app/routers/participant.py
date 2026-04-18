@@ -1,18 +1,26 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials
 from postgrest.exceptions import APIError
 
 from app.db.database import supabase
 from app.dependencies.auth import bearer_scheme, require_role
 from app.core.security import create_token, decode_token
-from app.schemas.participant import ParticipantResponse, ParticipantUpdate
+from app.schemas.participant import (
+    ParticipantResponse,
+    ParticipantUpdate,
+    PartnerSearchResponse,
+)
 from app.schemas.auth import LoginRequest, TokenResponse
 from app.schemas.schedule_visit import (
     ScheduleVisitCreate,
     ScheduleVisitDeleteResponse,
     ScheduleVisitResponse,
 )
+from app.utils.db_column_names import camel_partner_pk_column
 from app.utils.patch_payload import dump_update_or_400
+from app.utils.phone_normalize import is_plausible_in_mobile, normalize_phone_digits
 from app.utils.supabase_errors import format_api_error
 
 router = APIRouter(prefix="/participant", tags=["Participant"])
@@ -130,6 +138,85 @@ def patch_participant_profile(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=format_api_error(e),
         ) from e
+
+
+@router.get("/partners/search", response_model=PartnerSearchResponse)
+def participant_search_partner(
+    name: Optional[str] = Query(None, max_length=200),
+    partnerId: Optional[str] = Query(None, max_length=50),
+    phone: Optional[str] = Query(None, max_length=20),
+    current_user: dict = Depends(require_role(["participant"])),
+):
+    """
+    Find a single partner by exactly one of: **name** (partial, case-insensitive),
+    **partnerId** (exact), or **phone** (digits normalized to 10-digit India style).
+    """
+    n = (name or "").strip()
+    pid = (partnerId or "").strip()
+    ph = (phone or "").strip()
+    filled = sum(bool(x) for x in (n, pid, ph))
+    if filled != 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provide exactly one of: name, partnerId, or phone",
+        )
+
+    prid = camel_partner_pk_column()
+    select_cols = f"{prid},name,phone"
+
+    try:
+        if pid:
+            result = (
+                supabase.table("partners")
+                .select(select_cols)
+                .eq(prid, pid)
+                .limit(1)
+                .execute()
+            )
+        elif ph:
+            digits = normalize_phone_digits(ph)
+            if not is_plausible_in_mobile(ph):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="phone must be a plausible 10-digit mobile number",
+                )
+            result = (
+                supabase.table("partners")
+                .select(select_cols)
+                .eq("phone", digits)
+                .limit(1)
+                .execute()
+            )
+        else:
+            safe = "".join(c for c in n if c not in "%_\\")
+            if not safe.strip():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="name must contain at least one valid character",
+                )
+            pattern = f"%{safe.strip()}%"
+            result = (
+                supabase.table("partners")
+                .select(select_cols)
+                .ilike("name", pattern)
+                .order(prid)
+                .limit(1)
+                .execute()
+            )
+    except HTTPException:
+        raise
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+
+    if not result.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No partner found",
+        )
+    return PartnerSearchResponse.model_validate(result.data[0])
 
 
 @router.post(

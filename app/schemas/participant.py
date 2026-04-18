@@ -36,3 +36,13 @@ class ParticipantUpdate(BaseModel):
     offeredValues: Optional[str] = None
     lastVisit: Optional[datetime] = None
     lastUpdated: Optional[datetime] = None
+
+
+class PartnerSearchResponse(BaseModel):
+    """Partner fields returned to participants when searching introducers."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    partnerId: str = Field(validation_alias=AliasChoices("partnerId", "agentId"))
+    name: str
+    phone: str
