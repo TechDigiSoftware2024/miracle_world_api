@@ -94,8 +94,12 @@ def schedule_rows_to_db(
     investment_id: str,
     rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    """
+    Persist schedule lines. ``monthNumber`` is always 1, 2, 3, … (no string prefix).
+    Row ``id`` is assigned by the database (SERIAL/IDENTITY), also plain integers.
+    """
     out = []
-    for r in rows:
+    for idx, r in enumerate(rows, start=1):
         pd = r["payoutDate"]
         if isinstance(pd, datetime):
             pds = pd.isoformat()
@@ -103,7 +107,7 @@ def schedule_rows_to_db(
             pds = str(pd)
         out.append({
             "investmentId": investment_id,
-            "monthNumber": r["monthNumber"],
+            "monthNumber": idx,
             "payoutDate": pds,
             "amount": r["amount"],
             "status": r["status"],

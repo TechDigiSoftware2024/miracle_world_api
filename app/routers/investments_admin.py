@@ -12,8 +12,8 @@ from app.schemas.investment import (
     InvestmentResponse,
     InvestmentStatusUpdate,
     PaymentScheduleResponse,
-    new_investment_id,
 )
+from app.utils.investment_id import new_investment_id
 from app.services.investment_actions import replace_payment_schedules
 from app.utils.patch_payload import dump_update_or_400
 from app.utils.supabase_errors import format_api_error

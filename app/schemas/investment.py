@@ -123,12 +123,13 @@ class InvestmentResponse(BaseModel):
 class PaymentScheduleResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
-    id: int
+    id: int = Field(description="Database row id: integer 1, 2, 3, … (no prefix).")
     investmentId: str = Field(
         validation_alias=AliasChoices("investmentId", "investment_id")
     )
     monthNumber: int = Field(
-        validation_alias=AliasChoices("monthNumber", "month_number")
+        validation_alias=AliasChoices("monthNumber", "month_number"),
+        description="Installment index for this investment, starting at 1 (no prefix).",
     )
     payoutDate: datetime = Field(
         validation_alias=AliasChoices("payoutDate", "payout_date")
@@ -145,9 +146,3 @@ class PaymentScheduleStatusPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     status: PaymentLineStatus
-
-
-def new_investment_id() -> str:
-    import uuid
-
-    return f"INV{uuid.uuid4().hex[:17].upper()}"
