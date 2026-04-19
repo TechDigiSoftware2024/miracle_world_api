@@ -6,6 +6,11 @@ from app.db.database import supabase
 from app.dependencies.auth import bearer_scheme, require_role
 from app.core.security import create_token, decode_token
 from app.schemas.partner import PartnerResponse, PartnerUpdate
+from app.schemas.reward_program import (
+    RewardOfferResponse,
+    RewardProgramResponse,
+    RewardProgramWithOffersResponse,
+)
 from app.schemas.auth import LoginRequest, TokenResponse
 from app.utils.patch_payload import dump_update_or_400
 from app.utils.supabase_errors import format_api_error
@@ -120,6 +125,60 @@ def patch_partner_profile(
         return row
     except HTTPException:
         raise
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+
+
+# ─── REWARD PROGRAMS (active programs + offers) ─────────────────
+
+
+@router.get(
+    "/reward-programs",
+    response_model=list[RewardProgramWithOffersResponse],
+    summary="List active reward programs with offers",
+)
+def partner_list_active_reward_programs(
+    _: dict = Depends(require_role(["partner"])),
+):
+    """Partner-only. Returns **`isActive` = true** programs, each with its **offers** (newest programs first)."""
+    try:
+        prog = (
+            supabase.table("reward_programs")
+            .select("*")
+            .eq("isActive", True)
+            .order("startDate", desc=True)
+            .execute()
+        )
+        rows = prog.data or []
+        if not rows:
+            return []
+        ids = [int(r["id"]) for r in rows]
+        off = (
+            supabase.table("reward_offers")
+            .select("*")
+            .in_("programId", ids)
+            .order("createdAt", desc=True)
+            .execute()
+        )
+        by_pid: dict[int, list] = {}
+        for o in off.data or []:
+            pid = int(o.get("programId"))
+            by_pid.setdefault(pid, []).append(o)
+        out: list[RewardProgramWithOffersResponse] = []
+        for r in rows:
+            pid = int(r["id"])
+            offers = [RewardOfferResponse.model_validate(x) for x in by_pid.get(pid, [])]
+            base = RewardProgramResponse.model_validate(r)
+            out.append(
+                RewardProgramWithOffersResponse.model_validate({
+                    **base.model_dump(),
+                    "offers": [o.model_dump() for o in offers],
+                })
+            )
+        return out
     except APIError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

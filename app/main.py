@@ -27,6 +27,8 @@ from app.routers.nominee_user import router as nominee_user_router
 from app.routers.nominee_admin import router as nominee_admin_router
 from app.routers.manual_kyc_user import router as manual_kyc_user_router
 from app.routers.manual_kyc_admin import router as manual_kyc_admin_router
+from app.routers.reward_programs_admin import router as reward_programs_admin_router
+from app.routers.reward_offers_admin import router as reward_offers_admin_router
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,7 @@ API_DESCRIPTION = """
 12. **Bank details**: User `GET /bank-details/user/{userId}` (participant/partner own `userId` from login, or admin), `POST /bank-details`, `PUT /bank-details/{id}`. Admin `GET /admin/bank-details/pending`, `GET /admin/bank-details/{id}`, `PATCH /admin/bank-details/{id}/status`. Create table from `supabase_bank_details_table.sql`.
 13. **Nominees**: User `GET /nominees/user/{userId}`, `POST /nominees`, `PUT /nominees/{id}`. Admin `GET /admin/nominees`, `GET /admin/nominees/pending`, `GET /admin/nominees/user/{userId}`, `GET /admin/nominees/{id}`, `PATCH /admin/nominees/{id}/status`, `DELETE /admin/nominees/{id}`. Create table from `supabase_nominees_table.sql`.
 14. **Manual KYC**: User `GET /manual-kyc/user/{userId}`, `POST /manual-kyc` (`kycType`: **PAN**, **AADHAAR**, or **Both** + document URLs), `PUT /manual-kyc/{id}`. Admin `GET /admin/manual-kyc`, `GET /admin/manual-kyc/pending`, `GET /admin/manual-kyc/user/{userId}`, `GET /admin/manual-kyc/{id}`, `PATCH /admin/manual-kyc/{id}/status`, `DELETE /admin/manual-kyc/{id}`. Schema: `supabase_manual_kyc_table.sql`; existing DBs: `supabase_manual_kyc_kyc_type_add_both.sql`.
+15. **Reward programs**: Admin CRUD `GET|POST /admin/reward-programs`, `GET|PATCH|DELETE /admin/reward-programs/{id}`; offers `GET /admin/reward-offers?program_id=` `POST|GET|PATCH|DELETE /admin/reward-offers/...`. Partner `GET /partner/reward-programs` (active programs + offers). SQL: `supabase_reward_programs_tables.sql`.
 """
 
 app = FastAPI(
@@ -186,7 +189,7 @@ except APIError as e:
             "supabase_fund_types_table.sql, supabase_fund_types_profit_capital_special_columns.sql, "
             "supabase_properties_table.sql, supabase_bank_details_table.sql, "
             "supabase_nominees_table.sql, supabase_manual_kyc_table.sql, "
-            "supabase_manual_kyc_kyc_type_add_both.sql)."
+            "supabase_manual_kyc_kyc_type_add_both.sql, supabase_reward_programs_tables.sql)."
         )
 except Exception as e:
     logger.warning("seed_defaults failed: %s", e)
@@ -207,6 +210,8 @@ app.include_router(nominee_user_router)
 app.include_router(nominee_admin_router, prefix="/admin")
 app.include_router(manual_kyc_user_router)
 app.include_router(manual_kyc_admin_router, prefix="/admin")
+app.include_router(reward_programs_admin_router, prefix="/admin")
+app.include_router(reward_offers_admin_router, prefix="/admin")
 app.include_router(participant_router)
 app.include_router(partner_router)
 
