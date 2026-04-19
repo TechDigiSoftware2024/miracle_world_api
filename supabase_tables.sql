@@ -130,7 +130,9 @@ CREATE TABLE IF NOT EXISTS fund_types (
     "durationType" TEXT NOT NULL DEFAULT '',
     "duration" INT,
     notes TEXT NOT NULL DEFAULT '',
-    description JSONB NOT NULL DEFAULT '[]'::jsonb
+    description JSONB NOT NULL DEFAULT '[]'::jsonb,
+    "isProfitCapitalPerMonth" BOOLEAN NOT NULL DEFAULT false,
+    "isSpecial" BOOLEAN NOT NULL DEFAULT false
 );
 
 CREATE INDEX IF NOT EXISTS idx_fund_types_status ON fund_types (status);

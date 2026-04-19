@@ -46,6 +46,14 @@ class FundTypeCreate(BaseModel):
         default_factory=list,
         description="Multiple bullet points shown to users (stored as JSON array).",
     )
+    isProfitCapitalPerMonth: bool = Field(
+        default=False,
+        description="True if this fund pays profit plus capital per month.",
+    )
+    isSpecial: bool = Field(
+        default=False,
+        description="Marks the fund as special (e.g. featured or restricted).",
+    )
 
     @field_validator("description", mode="before")
     @classmethod
@@ -86,6 +94,8 @@ class FundTypeUpdate(BaseModel):
     )
     notes: Optional[str] = Field(default=None, max_length=10000)
     description: Optional[list[str]] = None
+    isProfitCapitalPerMonth: Optional[bool] = None
+    isSpecial: Optional[bool] = None
 
     @field_validator("description", mode="before")
     @classmethod
@@ -156,6 +166,17 @@ class FundTypeResponse(BaseModel):
     updatedAt: Optional[datetime] = Field(
         default=None, validation_alias=AliasChoices("updatedAt", "updated_at")
     )
+    isProfitCapitalPerMonth: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "isProfitCapitalPerMonth", "is_profit_capital_per_month"
+        ),
+        description="Profit plus capital paid per month.",
+    )
+    isSpecial: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("isSpecial", "is_special"),
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -192,4 +213,8 @@ class FundTypeResponse(BaseModel):
                 out["duration"] = None
             else:
                 out["duration"] = int(m or 0) + int(y or 0) * 12
+        if out.get("isProfitCapitalPerMonth") is None:
+            out["isProfitCapitalPerMonth"] = False
+        if out.get("isSpecial") is None:
+            out["isSpecial"] = False
         return out
