@@ -5,3 +5,4 @@ httpx
 python-dotenv
 pydantic
 python-jose[cryptography]
+python-dateutil

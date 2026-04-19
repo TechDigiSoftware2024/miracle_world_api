@@ -29,6 +29,9 @@ from app.routers.manual_kyc_user import router as manual_kyc_user_router
 from app.routers.manual_kyc_admin import router as manual_kyc_admin_router
 from app.routers.reward_programs_admin import router as reward_programs_admin_router
 from app.routers.reward_offers_admin import router as reward_offers_admin_router
+from app.routers.investments_participant import router as investments_participant_router
+from app.routers.investments_admin import router as investments_admin_router
+from app.routers.payment_schedules_admin import router as payment_schedules_admin_router
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +65,7 @@ API_DESCRIPTION = """
 13. **Nominees**: User `GET /nominees/user/{userId}`, `POST /nominees`, `PUT /nominees/{id}`. Admin `GET /admin/nominees`, `GET /admin/nominees/pending`, `GET /admin/nominees/user/{userId}`, `GET /admin/nominees/{id}`, `PATCH /admin/nominees/{id}/status`, `DELETE /admin/nominees/{id}`. Create table from `supabase_nominees_table.sql`.
 14. **Manual KYC**: User `GET /manual-kyc/user/{userId}`, `POST /manual-kyc` (`kycType`: **PAN**, **AADHAAR**, or **Both** + document URLs), `PUT /manual-kyc/{id}`. Admin `GET /admin/manual-kyc`, `GET /admin/manual-kyc/pending`, `GET /admin/manual-kyc/user/{userId}`, `GET /admin/manual-kyc/{id}`, `PATCH /admin/manual-kyc/{id}/status`, `DELETE /admin/manual-kyc/{id}`. Schema: `supabase_manual_kyc_table.sql`; existing DBs: `supabase_manual_kyc_kyc_type_add_both.sql`.
 15. **Reward programs**: Admin CRUD `GET|POST /admin/reward-programs`, `GET|PATCH|DELETE /admin/reward-programs/{id}`; offers `GET /admin/reward-offers?program_id=` `POST|GET|PATCH|DELETE /admin/reward-offers/...`. Partner `GET /partner/reward-programs` (active programs + offers). SQL: `supabase_reward_programs_tables.sql`.
+16. **Investments**: Participant `POST|GET /participant/investments`, `GET /participant/investments/{investmentId}`, `PATCH` (document URL), `GET .../payment-schedules`. Admin `GET|POST /admin/investments`, `?participant_id=`, `PATCH /admin/investments/{id}`, `PATCH /admin/investments/{id}/status` (sets **Active** + generates schedules), `DELETE`, `GET .../payment-schedules`; `PATCH /admin/payment-schedules/{id}` (line **paid**/…). SQL: `supabase_investments_tables.sql`.
 """
 
 app = FastAPI(
@@ -189,7 +193,8 @@ except APIError as e:
             "supabase_fund_types_table.sql, supabase_fund_types_profit_capital_special_columns.sql, "
             "supabase_properties_table.sql, supabase_bank_details_table.sql, "
             "supabase_nominees_table.sql, supabase_manual_kyc_table.sql, "
-            "supabase_manual_kyc_kyc_type_add_both.sql, supabase_reward_programs_tables.sql)."
+            "supabase_manual_kyc_kyc_type_add_both.sql, supabase_reward_programs_tables.sql, "
+            "supabase_investments_tables.sql)."
         )
 except Exception as e:
     logger.warning("seed_defaults failed: %s", e)
@@ -212,6 +217,9 @@ app.include_router(manual_kyc_user_router)
 app.include_router(manual_kyc_admin_router, prefix="/admin")
 app.include_router(reward_programs_admin_router, prefix="/admin")
 app.include_router(reward_offers_admin_router, prefix="/admin")
+app.include_router(investments_participant_router, prefix="/participant")
+app.include_router(investments_admin_router, prefix="/admin")
+app.include_router(payment_schedules_admin_router, prefix="/admin")
 app.include_router(participant_router)
 app.include_router(partner_router)
 
