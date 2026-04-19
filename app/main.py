@@ -49,7 +49,7 @@ API_DESCRIPTION = """
 2. **App settings**: Public `GET /settings` (company + default participant/partner IDs). Admin `GET /admin/settings` and `PATCH /admin/settings` to edit the same singleton row.
 3. **New users** call `POST /request`, then `GET /track-request/{phone}` (each item includes **id**). Public `DELETE /request/{request_id}?phone=...` removes a request when **phone** matches that row.
 4. **Optional**: `POST /check-admin-phone` with `{"phone":"..."}` returns `is_admin` so the UI can branch before mpin.
-5. **Login (MPIN)**: `POST /login` — phone + **mpin**; tries **admin → participant → partner**. Use `role` in the response for the app shell.
+5. **Login (MPIN)**: `POST /login` — phone + **mpin**; tries **admin → participant → partner**. Use `role` in the response for the app shell. **Swap role (participant ↔ partner)**: `POST /swap-role` with **Bearer** token when the same phone has **both** participant and partner rows — returns a new JWT for the other role and revokes the current token.
 6. **Login (OTP / MSG91)**: `POST /otp/send` → `POST /otp/login` with phone + **otp** (same JWT as MPIN login). Optional `POST /otp/retry`. Configure `MSG91_AUTH_KEY` and `MSG91_TEMPLATE_ID` on the server; Flutter should call **these** endpoints instead of embedding the MSG91 auth key in the app.
 7. **Protected routes** need header: `Authorization: Bearer <access_token>` from login.
 8. In **Swagger UI**, click **Authorize**, paste the token only (not the word Bearer), then call admin endpoints.
