@@ -13,6 +13,7 @@ InvestmentStatus = Literal[
     "Completed",
 ]
 PaymentLineStatus = Literal["paid", "due", "pending"]
+ScheduleLineType = Literal["full", "prorata", "adjustment"]
 
 
 class InvestmentParticipantCreate(BaseModel):
@@ -141,6 +142,25 @@ class PaymentScheduleResponse(BaseModel):
         validation_alias=AliasChoices("payoutDate", "payout_date")
     )
     amount: float
+    lineType: ScheduleLineType = Field(
+        default="full",
+        validation_alias=AliasChoices("lineType", "line_type"),
+        description="full = standard month; prorata = first partial month; adjustment = closing balance line.",
+    )
+    isProrata: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("isProrata", "is_prorata"),
+    )
+    daysCount: Optional[int] = Field(
+        default=None,
+        validation_alias=AliasChoices("daysCount", "days_count"),
+        description="Calendar days in the pro-rata slice (first line only).",
+    )
+    perDayAmount: Optional[float] = Field(
+        default=None,
+        validation_alias=AliasChoices("perDayAmount", "per_day_amount"),
+        description="Monthly amount ÷ days in start month, 2 dp (first line only).",
+    )
     status: PaymentLineStatus
     createdAt: datetime = Field(validation_alias=AliasChoices("createdAt", "created_at"))
     updatedAt: Optional[datetime] = Field(

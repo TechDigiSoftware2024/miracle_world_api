@@ -3,12 +3,17 @@ Payment schedule math for investments.
 
 **Full-month start (day = 1):** every payout equals the full monthly amount.
 
-**Mid-month start:** first payout (on the next calendar month's 1st) is pro-rata:
-``(monthly / daysInMonth) * remainingDays``. Middle months are full monthly. The last
-payout adds the remainder ``monthly - firstProRata`` so the grand total equals
-``duration × monthly`` (no drift from rounding).
+**Mid-month start:** first payout (on the next month's 1st) is pro-rata:
+``round_half_up((monthly / daysInMonth) * remainingDays)``. Middle months are full
+monthly. The **last** payout is the balance so the sum of all lines equals
+``duration × monthly`` exactly:
 
-Uses :class:`decimal.Decimal` with half-up quantization to 2 dp for reporting clarity.
+``last = 2 * monthly - first_pro_rata`` (equivalently ``monthly + (monthly - first_pro_rata)``).
+
+That is *not* ``monthly - first_pro_rata`` when ``duration > 2`` — the latter would
+underpay by ``(duration - 2) * monthly``.
+
+Uses :class:`decimal.Decimal` with half-up quantization to 2 dp; DB uses NUMERIC.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -44,7 +49,9 @@ def calculate_payment_schedule(
     """
     Returns (schedule_rows, next_payout_date, next_payout_amount).
 
-    Each row: monthNumber, amount (float, 2 dp), payoutDate, status 'pending'.
+    Each row: monthNumber, amount (float, 2 dp), payoutDate, status 'pending',
+    lineType ('full' | 'prorata' | 'adjustment'), isProrata, optional daysCount /
+    perDayAmount for the pro-rata line.
     """
     if relativedelta is None:
         raise RuntimeError("python-dateutil is required for investment schedules")
@@ -70,14 +77,19 @@ def calculate_payment_schedule(
                 "amount": float(M),
                 "payoutDate": payout_date,
                 "status": "pending",
+                "lineType": "full",
+                "isProrata": False,
+                "daysCount": None,
+                "perDayAmount": None,
             })
     else:
         # Case 2: pro-rata first month slice, full middles, last = M + (M - first_pro_rata)
         total_days = _days_in_month(investment_date)
         remaining_days = total_days - start_day + 1
         per_day = M / Decimal(total_days)
+        per_day_q = _q2(per_day)
         first_pro_rata = _q2(per_day * Decimal(remaining_days))
-        # Last line = 2M − first (same as M + (M − first_pro_rata)); totals to duration × M
+        # Last line = 2M − first so sum of all N lines = N × M after first is rounded
         last_amount = _q2(Decimal(2) * M - first_pro_rata)
 
         first_payout_date = base + relativedelta(months=1)
@@ -89,6 +101,10 @@ def calculate_payment_schedule(
                 "amount": float(first_pro_rata),
                 "payoutDate": first_payout_date,
                 "status": "pending",
+                "lineType": "prorata",
+                "isProrata": True,
+                "daysCount": remaining_days,
+                "perDayAmount": float(per_day_q),
             })
         else:
             schedule.append({
@@ -96,6 +112,10 @@ def calculate_payment_schedule(
                 "amount": float(first_pro_rata),
                 "payoutDate": first_payout_date,
                 "status": "pending",
+                "lineType": "prorata",
+                "isProrata": True,
+                "daysCount": remaining_days,
+                "perDayAmount": float(per_day_q),
             })
             for m in range(2, duration):
                 payout_date = base + relativedelta(months=m)
@@ -104,6 +124,10 @@ def calculate_payment_schedule(
                     "amount": float(M),
                     "payoutDate": payout_date,
                     "status": "pending",
+                    "lineType": "full",
+                    "isProrata": False,
+                    "daysCount": None,
+                    "perDayAmount": None,
                 })
             last_payout_date = base + relativedelta(months=duration)
             schedule.append({
@@ -111,6 +135,10 @@ def calculate_payment_schedule(
                 "amount": float(last_amount),
                 "payoutDate": last_payout_date,
                 "status": "pending",
+                "lineType": "adjustment",
+                "isProrata": False,
+                "daysCount": None,
+                "perDayAmount": None,
             })
 
     next_payout = schedule[0]["payoutDate"]
@@ -133,11 +161,16 @@ def schedule_rows_to_db(
             pds = pd.isoformat()
         else:
             pds = str(pd)
-        out.append({
+        row_db: dict[str, Any] = {
             "investmentId": investment_id,
             "monthNumber": idx,
             "payoutDate": pds,
             "amount": r["amount"],
             "status": r["status"],
-        })
+            "lineType": r.get("lineType", "full"),
+            "isProrata": bool(r.get("isProrata", False)),
+            "daysCount": r.get("daysCount"),
+            "perDayAmount": r.get("perDayAmount"),
+        }
+        out.append(row_db)
     return out

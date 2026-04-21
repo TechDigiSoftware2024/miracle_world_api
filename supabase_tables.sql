@@ -346,10 +346,17 @@ CREATE TABLE IF NOT EXISTS payment_schedules (
     "monthNumber" INT NOT NULL,
     "payoutDate" TIMESTAMPTZ NOT NULL,
     amount NUMERIC(12, 2) NOT NULL,
+    "lineType" TEXT NOT NULL DEFAULT 'full',
+    "isProrata" BOOLEAN NOT NULL DEFAULT false,
+    "daysCount" INT,
+    "perDayAmount" NUMERIC(10, 2),
     status TEXT NOT NULL DEFAULT 'pending',
     "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
     "updatedAt" TIMESTAMPTZ,
-    CONSTRAINT payment_schedules_line_status_chk CHECK (status IN ('paid', 'due', 'pending'))
+    CONSTRAINT payment_schedules_line_status_chk CHECK (status IN ('paid', 'due', 'pending')),
+    CONSTRAINT payment_schedules_line_type_chk CHECK (
+        "lineType" IN ('full', 'prorata', 'adjustment')
+    )
 );
 
 CREATE INDEX IF NOT EXISTS idx_payment_schedules_investment ON payment_schedules ("investmentId");
