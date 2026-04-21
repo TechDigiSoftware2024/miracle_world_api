@@ -1,17 +1,30 @@
 """
 Payment schedule math for investments.
 
-**Full-month start (day = 1):** every payout equals the full monthly amount.
+The **monthly** cash amount ``M`` is whatever is stored on the investment as
+``monthlyPayout`` (e.g. ₹1,00,000 at 10%/month total payout ⇒ ``M = 10_000``,
+whether that 10% is labelled as 5% profit + 5% capital in fund terms or not).
 
-**Mid-month start:** first payout (on the next month's 1st) is pro-rata:
-``round_half_up((monthly / daysInMonth) * remainingDays)``. Middle months are full
-monthly. The **last** payout is the balance so the sum of all lines equals
-``duration × monthly`` exactly:
+**Anchor date:** schedules use the investment **activation** instant passed in
+(typically ``investmentStartDate`` when status becomes Active).
 
-``last = 2 * monthly - first_pro_rata`` (equivalently ``monthly + (monthly - first_pro_rata)``).
+**Full-month start (day = 1):** every payout on subsequent month-1sts equals ``M``.
 
-That is *not* ``monthly - first_pro_rata`` when ``duration > 2`` — the latter would
-underpay by ``(duration - 2) * monthly``.
+**Mid-month start:** first payout (on the **next** month's 1st) is pro-rata for the
+partial calendar month of activation:
+
+- ``remaining_days = days_in_month(anchor) - anchor.day + 1``
+- ``per_day = M / days_in_month(anchor)`` (stored rounded to 2 dp on the row)
+- ``first = round_half_up(per_day * remaining_days)``
+
+Middle months: full ``M`` each. **Last** month closes the ledger so totals match
+``duration × M``:
+
+``last = M + (M - first) = 2 * M - first``
+
+Example (April 30 days, activate 10th, ``M = 10_000``): remaining 21 days,
+``first ≈ 7_000``; last installment ``10_000 + 3_000 = 13_000`` (the ₹3_000 is
+the slice of the first calendar month that was not paid in the pro-rata line).
 
 Uses :class:`decimal.Decimal` with half-up quantization to 2 dp; DB uses NUMERIC.
 """
@@ -89,7 +102,7 @@ def calculate_payment_schedule(
         per_day = M / Decimal(total_days)
         per_day_q = _q2(per_day)
         first_pro_rata = _q2(per_day * Decimal(remaining_days))
-        # Last line = 2M − first so sum of all N lines = N × M after first is rounded
+        # last = M + (M − first) so sum of N lines = N × M; "adjustment" is the deferred slice
         last_amount = _q2(Decimal(2) * M - first_pro_rata)
 
         first_payout_date = base + relativedelta(months=1)
