@@ -23,13 +23,16 @@ class InvestmentParticipantCreate(BaseModel):
     fundId: str = Field(default="", max_length=20)
     fundName: str = Field(default="", max_length=100)
     investedAmount: float = Field(ge=0)
-    roiPercentage: float = Field(ge=0)
+    roiPercentage: float = Field(
+        ge=0,
+        description="Return on principal per month (not annual): monthly cash = principal × roi% ÷ 100.",
+    )
     durationMonths: int = Field(ge=0)
     investmentDate: Optional[datetime] = None
     monthlyPayout: Optional[float] = Field(
         default=None,
         ge=0,
-        description="If omitted: investedAmount × roi% ÷ 12 when durationMonths > 0.",
+        description="If omitted and durationMonths > 0: investedAmount × (roiPercentage ÷ 100).",
     )
     isProfitCapitalPerMonth: bool = False
 
@@ -41,7 +44,7 @@ class InvestmentParticipantCreate(BaseModel):
             self.monthlyPayout = 0.0
             return self
         self.monthlyPayout = round(
-            self.investedAmount * (self.roiPercentage / 100.0) / 12.0,
+            self.investedAmount * (self.roiPercentage / 100.0),
             2,
         )
         return self
@@ -65,7 +68,11 @@ class InvestmentAdminUpdate(BaseModel):
     fundId: Optional[str] = Field(default=None, max_length=20)
     fundName: Optional[str] = Field(default=None, max_length=100)
     investedAmount: Optional[float] = Field(default=None, ge=0)
-    roiPercentage: Optional[float] = Field(default=None, ge=0)
+    roiPercentage: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description="Per month on principal (same meaning as on create).",
+    )
     durationMonths: Optional[int] = Field(default=None, ge=0)
     investmentDate: Optional[datetime] = None
     monthlyPayout: Optional[float] = Field(default=None, ge=0)
@@ -96,7 +103,8 @@ class InvestmentResponse(BaseModel):
     fundName: str = Field(default="", validation_alias=AliasChoices("fundName", "fund_name"))
     investedAmount: float
     roiPercentage: float = Field(
-        validation_alias=AliasChoices("roiPercentage", "roi_percentage")
+        validation_alias=AliasChoices("roiPercentage", "roi_percentage"),
+        description="% of invested principal paid per month (not annual).",
     )
     durationMonths: int = Field(
         validation_alias=AliasChoices("durationMonths", "duration_months")
@@ -108,7 +116,8 @@ class InvestmentResponse(BaseModel):
         default=None, validation_alias=AliasChoices("nextPayoutDate", "next_payout_date")
     )
     monthlyPayout: float = Field(
-        validation_alias=AliasChoices("monthlyPayout", "monthly_payout")
+        validation_alias=AliasChoices("monthlyPayout", "monthly_payout"),
+        description="Nominal monthly installment before pro-rata / adjustment on schedule lines.",
     )
     isProfitCapitalPerMonth: bool = Field(
         validation_alias=AliasChoices("isProfitCapitalPerMonth", "is_profit_capital_per_month")
