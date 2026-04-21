@@ -6,6 +6,7 @@ from postgrest.exceptions import APIError
 from app.db.database import supabase
 from app.dependencies.auth import require_role
 from app.schemas.investment import PaymentScheduleResponse, PaymentScheduleStatusPatch
+from app.services.investment_actions import sync_investment_status_with_payment_lines
 from app.utils.patch_payload import dump_update_or_400
 from app.utils.supabase_errors import format_api_error
 
@@ -50,6 +51,15 @@ def admin_patch_payment_schedule_status(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Could not read payment schedule after update.",
             )
+        iid = str(row.get("investmentId") or "").strip()
+        if iid:
+            try:
+                sync_investment_status_with_payment_lines(iid)
+            except APIError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=format_api_error(e),
+                ) from e
         return PaymentScheduleResponse.model_validate(row)
     except HTTPException:
         raise

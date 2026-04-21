@@ -3,30 +3,31 @@ import os
 
 load_dotenv()
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_HOST = os.getenv("DB_HOST")
+DB_PORT = os.getenv("DB_PORT")
+DB_NAME = os.getenv("DB_NAME")
 
-if not SUPABASE_URL or not SUPABASE_KEY:
-    raise RuntimeError(
-        "SUPABASE_URL and SUPABASE_KEY must be set. "
-        "Grab them from Supabase Dashboard > Settings > API."
-    )
+DATABASE_URL = 'postgresql://postgres.lesxjfeyrjndxrdhoqdk:Arjun@12Tech@aws-1-ap-northeast-2.pooler.supabase.com:6543/postgres'
 
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "fallback-secret-change-me")
 JWT_ALGORITHM = "HS256"
 
-# MSG91 OTP (optional — leave empty to disable /otp/* routes except clear errors)
-MSG91_AUTH_KEY = (os.getenv("MSG91_AUTH_KEY") or "").strip()
-MSG91_TEMPLATE_ID = (os.getenv("MSG91_TEMPLATE_ID") or "").strip()
-MSG91_BASE_URL = (
-    os.getenv("MSG91_BASE_URL") or "https://control.msg91.com/api/v5"
-).strip()
+# Supabase
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 
-# Contact form: optional SMTP to notify info@… (see app/services/contact_email.py)
-CONTACT_NOTIFY_TO = (os.getenv("CONTACT_NOTIFY_TO") or "info@miracleworldllp.com").strip()
-SMTP_HOST = (os.getenv("SMTP_HOST") or "").strip()
-SMTP_PORT = int(os.getenv("SMTP_PORT") or "587")
-SMTP_USER = (os.getenv("SMTP_USER") or "").strip()
-SMTP_PASSWORD = (os.getenv("SMTP_PASSWORD") or "").strip()
-SMTP_FROM = (os.getenv("SMTP_FROM") or "").strip() or None
-SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "true").lower() in ("1", "true", "yes")
+# Contact email (SMTP)
+CONTACT_NOTIFY_TO = os.getenv("CONTACT_NOTIFY_TO", "")
+SMTP_HOST = os.getenv("SMTP_HOST", "")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+SMTP_FROM = os.getenv("SMTP_FROM", "")
+SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "true").strip().lower() in ("1", "true", "yes", "on")
+
+# MSG91
+MSG91_AUTH_KEY = os.getenv("MSG91_AUTH_KEY", "")
+MSG91_TEMPLATE_ID = os.getenv("MSG91_TEMPLATE_ID", "")
+MSG91_BASE_URL = os.getenv("MSG91_BASE_URL", "https://control.msg91.com/api/v5")

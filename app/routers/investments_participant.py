@@ -58,7 +58,7 @@ def participant_create_investment(
         "nextPayoutDate": None,
         "monthlyPayout": float(payload.monthlyPayout or 0),
         "isProfitCapitalPerMonth": payload.isProfitCapitalPerMonth,
-        "status": "Pending Approval",
+        "status": "Processing",
         "investmentStartDate": None,
         "investmentDoc": "",
         "updatedAt": None,
@@ -148,10 +148,13 @@ def participant_patch_investment_doc(
     if str(row.get("participantId", "")).strip() != str(current_user.get("userId", "")).strip():
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your investment")
     now = datetime.now(timezone.utc).isoformat()
+    patch: dict = {"investmentDoc": payload.investmentDoc, "updatedAt": now}
+    if str(row.get("status", "")).strip() == "Processing":
+        patch["status"] = "Pending Approval"
     try:
         updated = (
             supabase.table(_TABLE)
-            .update({"investmentDoc": payload.investmentDoc, "updatedAt": now})
+            .update(patch)
             .eq("investmentId", investment_id)
             .execute()
         )

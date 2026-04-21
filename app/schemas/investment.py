@@ -5,7 +5,13 @@ from typing import Literal, Optional
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 
-InvestmentStatus = Literal["Active", "Pending Approval", "Processing", "Completed"]
+InvestmentStatus = Literal[
+    "Processing",
+    "Pending Approval",
+    "Active",
+    "Matured",
+    "Completed",
+]
 PaymentLineStatus = Literal["paid", "due", "pending"]
 
 
@@ -42,7 +48,7 @@ class InvestmentParticipantCreate(BaseModel):
 
 class InvestmentAdminCreate(InvestmentParticipantCreate):
     participantId: str = Field(min_length=1, max_length=32)
-    status: InvestmentStatus = "Pending Approval"
+    status: InvestmentStatus = "Processing"
 
 
 class InvestmentDocUpdate(BaseModel):

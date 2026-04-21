@@ -211,7 +211,10 @@ def admin_patch_investment_status(
             ) from e
     else:
         patch = {"status": new_status, "updatedAt": now}
-        if old_status == "Active" and new_status != "Active":
+        if (
+            str(old_status or "").strip() == "Active"
+            and str(new_status or "").strip() in ("Processing", "Pending Approval")
+        ):
             try:
                 supabase.table(_PS).delete().eq("investmentId", investment_id).execute()
             except APIError as e:

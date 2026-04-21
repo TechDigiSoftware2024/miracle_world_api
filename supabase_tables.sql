@@ -320,13 +320,19 @@ CREATE TABLE IF NOT EXISTS investments (
     "nextPayoutDate" TIMESTAMPTZ,
     "monthlyPayout" NUMERIC(12, 2) NOT NULL DEFAULT 0,
     "isProfitCapitalPerMonth" BOOLEAN NOT NULL DEFAULT false,
-    status TEXT NOT NULL DEFAULT 'Pending Approval',
+    status TEXT NOT NULL DEFAULT 'Processing',
     "investmentStartDate" TIMESTAMPTZ,
     "investmentDoc" TEXT NOT NULL DEFAULT '',
     "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
     "updatedAt" TIMESTAMPTZ,
     CONSTRAINT investments_status_chk CHECK (
-        status IN ('Active', 'Pending Approval', 'Processing', 'Completed')
+        status IN (
+            'Processing',
+            'Pending Approval',
+            'Active',
+            'Matured',
+            'Completed'
+        )
     )
 );
 
