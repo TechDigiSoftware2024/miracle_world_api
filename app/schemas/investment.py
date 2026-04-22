@@ -181,3 +181,59 @@ class PaymentScheduleStatusPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     status: PaymentLineStatus
+
+
+class AdminInvestmentFundStatsItem(BaseModel):
+    """Per fund type: how much capital, how many investment rows, how many users (partners optional)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    fundId: Optional[int] = Field(
+        default=None,
+        description="`fund_types.id` when `investments.fundId` is numeric; null for unspecified/non-numeric.",
+    )
+    fundName: str = Field(
+        default="",
+        description="Name from `fund_types` (or a fallback).",
+    )
+    totalInvestedAmount: float
+    investmentCount: int
+    userInvestorCount: int = Field(
+        description="Distinct participants (users) with at least one investment in this fund.",
+    )
+    partnerCount: int = Field(
+        default=0,
+        description="Distinct non-empty `agentId` (partners) on investments in this fund.",
+    )
+
+
+class AdminInvestmentStatsResponse(BaseModel):
+    """
+    **Admin overview** (not investment-only scope):
+
+    * **Portfolio** — total principal through investments and total investment row count.
+    * **App** — total participant and partner user rows; pending signup **user_requests** (`status` = `pending`).
+    * **funds** — each fund type with amounts, investment counts, and how many **users** invested in that fund.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    totalInvestedAmount: float = Field(
+        description="Sum of `investedAmount` across all investment rows (capital through investments).",
+    )
+    totalInvestmentCount: int = Field(
+        description="Total number of investment rows in the system.",
+    )
+    totalParticipantsInApp: int = Field(
+        description="Count of rows in the **participants** table.",
+    )
+    totalPartnersInApp: int = Field(
+        description="Count of rows in the **partners** table.",
+    )
+    pendingUserRequestsCount: int = Field(
+        description="**user_requests** with `status` = `pending` (join approvals).",
+    )
+    funds: list[AdminInvestmentFundStatsItem] = Field(
+        default_factory=list,
+        description="Per `fund_type`: amounts, investment counts, and user-investor counts. Optional `fund_type_id` filter narrows this list only.",
+    )

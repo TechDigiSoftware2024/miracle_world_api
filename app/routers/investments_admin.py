@@ -7,6 +7,8 @@ from postgrest.exceptions import APIError
 from app.db.database import supabase
 from app.dependencies.auth import require_role
 from app.schemas.investment import (
+    AdminInvestmentFundStatsItem,
+    AdminInvestmentStatsResponse,
     InvestmentAdminCreate,
     InvestmentAdminUpdate,
     InvestmentResponse,
@@ -14,6 +16,7 @@ from app.schemas.investment import (
     PaymentScheduleResponse,
 )
 from app.utils.investment_id import new_investment_id
+from app.utils.db_column_names import camel_participant_pk_column, camel_partner_pk_column
 from app.services.investment_actions import replace_payment_schedules
 from app.utils.patch_payload import dump_update_or_400
 from app.utils.supabase_errors import format_api_error
@@ -44,6 +47,208 @@ def admin_list_investments(
         if participant_id is not None and str(participant_id).strip():
             q = q.eq("participantId", str(participant_id).strip())
         result = q.execute()
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+    return [InvestmentResponse.model_validate(r) for r in (result.data or [])]
+
+
+def _parse_fund_id_key(raw) -> tuple[str, Optional[int]]:
+    """Group key and optional numeric fund type id."""
+    if raw is None:
+        return ("", None)
+    s = str(raw).strip()
+    if not s:
+        return ("", None)
+    try:
+        return (s, int(s))
+    except (TypeError, ValueError):
+        return (s, None)
+
+
+def _row_count(
+    table: str,
+    pk: str,
+    *,
+    status_value: Optional[str] = None,
+) -> int:
+    try:
+        q = supabase.table(table).select(pk, count="exact")
+        if status_value is not None:
+            q = q.eq("status", status_value)
+        r = q.limit(0).execute()
+        return int(r.count or 0)
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+
+
+def _empty_fund_bucket(num_id: Optional[int], gk: str) -> dict:
+    return {
+        "numId": num_id,
+        "key": gk,
+        "amount": 0.0,
+        "n": 0,
+        "participants": set(),
+        "partners": set(),
+    }
+
+
+@router.get("/stats", response_model=AdminInvestmentStatsResponse)
+def admin_investment_stats(
+    fund_type_id: list[int] = Query(
+        default=[],
+        description=(
+            "If set, only these `fund_types.id` are listed in **funds** (still includes zero-activity). "
+            "Omit to list all fund types."
+        ),
+    ),
+    _: dict = Depends(require_role(["admin"])),
+):
+    """
+    **Admin dashboard** numbers: app-wide user counts, pending join requests, portfolio totals, then per–fund-type activity.
+    """
+    p_pk = camel_participant_pk_column()
+    a_pk = camel_partner_pk_column()
+
+    n_participants = _row_count("participants", p_pk)
+    n_partners = _row_count("partners", a_pk)
+    n_pending = _row_count("user_requests", "id", status_value="pending")
+
+    _FT = "fund_types"
+    try:
+        ft_res = (
+            supabase.table(_FT)
+            .select("id, fundName")
+            .order("id")
+            .execute()
+        )
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+    ft_rows: list[dict] = list(ft_res.data or [])
+
+    try:
+        inv_res = supabase.table(_TABLE).select(
+            "fundId, investedAmount, participantId, agentId"
+        ).execute()
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+    rows = inv_res.data or []
+
+    total_amt = 0.0
+    for r in rows:
+        try:
+            total_amt += float(r.get("investedAmount") or 0)
+        except (TypeError, ValueError):
+            pass
+    total_n = len(rows)
+
+    by_key: dict[str, dict] = {}
+    for r in rows:
+        raw_fid = r.get("fundId")
+        gk, num_id = _parse_fund_id_key(raw_fid)
+        if gk not in by_key:
+            by_key[gk] = _empty_fund_bucket(num_id, gk)
+        b = by_key[gk]
+        b["numId"] = num_id if b.get("numId") is None else b["numId"]
+        try:
+            b["amount"] += float(r.get("investedAmount") or 0)
+        except (TypeError, ValueError):
+            pass
+        b["n"] += 1
+        pid = r.get("participantId")
+        ag = r.get("agentId")
+        if pid is not None and str(pid).strip():
+            b["participants"].add(str(pid).strip())
+        if ag is not None and str(ag).strip():
+            b["partners"].add(str(ag).strip())
+
+    allow_ids: Optional[set[int]] = None
+    if fund_type_id:
+        allow_ids = set(fund_type_id)
+
+    def _row_from_bucket(
+        fund_id: Optional[int], name: str, b: dict
+    ) -> AdminInvestmentFundStatsItem:
+        return AdminInvestmentFundStatsItem(
+            fundId=fund_id,
+            fundName=name,
+            totalInvestedAmount=round(b["amount"], 2),
+            investmentCount=b["n"],
+            userInvestorCount=len(b["participants"]),
+            partnerCount=len(b["partners"]),
+        )
+
+    fund_items: list[AdminInvestmentFundStatsItem] = []
+    for ft in ft_rows:
+        fid = int(ft["id"])
+        if allow_ids is not None and fid not in allow_ids:
+            continue
+        gk = str(fid)
+        label = str(ft.get("fundName") or ft.get("fund_name") or "").strip() or f"Fund {fid}"
+        b = by_key.get(gk) or _empty_fund_bucket(fid, gk)
+        fund_items.append(_row_from_bucket(fid, label, b))
+
+    known_numeric = {str(int(ft["id"])) for ft in ft_rows}
+    if allow_ids is None and "" in by_key and by_key[""]["n"] > 0:
+        fund_items.append(
+            _row_from_bucket(
+                None,
+                "Unspecified",
+                by_key[""],
+            )
+        )
+    if allow_ids is None:
+        for gk, b in sorted(by_key.items(), key=lambda it: it[0] or ""):
+            if gk in known_numeric or gk == "":
+                continue
+            if b["n"] == 0:
+                continue
+            label = f"Other ({gk})" if gk else "Unspecified"
+            fund_items.append(
+                _row_from_bucket(
+                    b.get("numId"),
+                    label,
+                    b,
+                )
+            )
+
+    return AdminInvestmentStatsResponse(
+        totalInvestedAmount=round(total_amt, 2),
+        totalInvestmentCount=total_n,
+        totalParticipantsInApp=n_participants,
+        totalPartnersInApp=n_partners,
+        pendingUserRequestsCount=n_pending,
+        funds=fund_items,
+    )
+
+
+@router.get("/pending", response_model=List[InvestmentResponse])
+def admin_list_pending_investments(
+    _: dict = Depends(require_role(["admin"])),
+):
+    """
+    All investments not yet **Active**: **Processing** and **Pending Approval** (pre-activation workflow).
+    Newest first.
+    """
+    try:
+        result = (
+            supabase.table(_TABLE)
+            .select("*")
+            .in_("status", ["Processing", "Pending Approval"])
+            .order("createdAt", desc=True)
+            .execute()
+        )
     except APIError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
