@@ -32,6 +32,9 @@ from app.routers.reward_offers_admin import router as reward_offers_admin_router
 from app.routers.investments_participant import router as investments_participant_router
 from app.routers.investments_admin import router as investments_admin_router
 from app.routers.payment_schedules_admin import router as payment_schedules_admin_router
+from app.routers.payouts_admin import router as payouts_admin_router
+from app.routers.payouts_partner import router as payouts_partner_router
+from app.routers.payouts_participant import router as payouts_participant_router
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +69,7 @@ API_DESCRIPTION = """
 14. **Manual KYC**: User `GET /manual-kyc/user/{userId}`, `POST /manual-kyc` (`kycType`: **PAN**, **AADHAAR**, or **Both** + document URLs), `PUT /manual-kyc/{id}`. Admin `GET /admin/manual-kyc`, `GET /admin/manual-kyc/pending`, `GET /admin/manual-kyc/user/{userId}`, `GET /admin/manual-kyc/{id}`, `PATCH /admin/manual-kyc/{id}/status`, `DELETE /admin/manual-kyc/{id}`. Schema: `supabase_manual_kyc_table.sql`; existing DBs: `supabase_manual_kyc_kyc_type_add_both.sql`.
 15. **Reward programs**: Admin CRUD `GET|POST /admin/reward-programs`, `GET|PATCH|DELETE /admin/reward-programs/{id}`; offers `GET /admin/reward-offers?program_id=` `POST|GET|PATCH|DELETE /admin/reward-offers/...`. Partner `GET /partner/reward-programs` (active programs + offers). SQL: `supabase_reward_programs_tables.sql`.
 16. **Investments**: Typical flow **Processing** (create) → **Pending Approval** (after participant `PATCH` with document URL) → **Active** (admin `PATCH .../status`; admin may activate from **Processing** or **Pending Approval** without documents). Then **Matured** when all schedule lines are **paid**. **Completed** remains for manual closure if needed. Participant `POST|GET /participant/investments`, `GET /participant/investments/{investmentId}`, `PATCH` (document URL), `GET .../payment-schedules`. Admin `GET|POST /admin/investments`, `GET /admin/investments/stats` (admin dashboard: portfolio totals, app participant/partner counts, pending **user_requests**, per–fund-type investment and user-investor counts; optional `fund_type_id` on the fund list), `GET /admin/investments/pending` (**Processing** + **Pending Approval**), `?participant_id=`, `PATCH /admin/investments/{id}`, `PATCH /admin/investments/{id}/status`, `DELETE`, `GET .../payment-schedules`; `PATCH /admin/payment-schedules/{id}` (line **paid**/…). SQL: `supabase_investments_tables.sql`; existing DBs: `supabase_investment_status_workflow_migration.sql`.
+17. **Payouts**: Table `supabase_payouts_table.sql` (existing DBs: `supabase_payouts_level_depth_migration.sql`) — **payoutId**, **userId**, **recipientType** (participant | partner), **amount**, **status** (pending, processing, paid, failed, cancelled), **paymentMethod** (BANK, IMPS/NEFT, CASH), optional **transactionId** / **investmentId**, **payoutDate**, **remarks**, **payoutType** (commission, monthly_income, extra_income), **createdBy** (admin | automatic), **createdByAdminId** when created by admin, optional **levelDepth** (1–100, **partner** MLM downline only; `null` for participants). Admin: `GET|POST /admin/payouts`, `GET /admin/payouts/{payoutId}`, `PATCH|DELETE /admin/payouts/{payoutId}`; list search/filter: `q`, `payoutStatus`, `payoutType`, `paymentMethod`, `userId`, `recipientType`, `payoutDateFrom`, `payoutDateTo`, `levelDepth`. Partner: `GET /partner/payouts` (same search params, only own rows). Participant: `GET /participant/payouts` (same without `levelDepth` filter, only own rows).
 """
 
 app = FastAPI(
@@ -194,7 +198,7 @@ except APIError as e:
             "supabase_properties_table.sql, supabase_bank_details_table.sql, "
             "supabase_nominees_table.sql, supabase_manual_kyc_table.sql, "
             "supabase_manual_kyc_kyc_type_add_both.sql, supabase_reward_programs_tables.sql, "
-            "supabase_investments_tables.sql)."
+            "supabase_investments_tables.sql, supabase_payouts_table.sql)."
         )
 except Exception as e:
     logger.warning("seed_defaults failed: %s", e)
@@ -220,6 +224,9 @@ app.include_router(reward_offers_admin_router, prefix="/admin")
 app.include_router(investments_participant_router, prefix="/participant")
 app.include_router(investments_admin_router, prefix="/admin")
 app.include_router(payment_schedules_admin_router, prefix="/admin")
+app.include_router(payouts_admin_router, prefix="/admin")
+app.include_router(payouts_partner_router, prefix="/partner")
+app.include_router(payouts_participant_router, prefix="/participant")
 app.include_router(participant_router)
 app.include_router(partner_router)
 
