@@ -7,6 +7,7 @@ from app.db.database import supabase
 from app.dependencies.auth import require_role
 from app.schemas.investment import PaymentScheduleResponse, PaymentScheduleStatusPatch
 from app.services.investment_actions import sync_investment_status_with_payment_lines
+from app.services.participant_portfolio_recalc import recalc_from_investment_id
 from app.utils.patch_payload import dump_update_or_400
 from app.utils.supabase_errors import format_api_error
 
@@ -60,6 +61,7 @@ def admin_patch_payment_schedule_status(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=format_api_error(e),
                 ) from e
+            recalc_from_investment_id(iid)
         return PaymentScheduleResponse.model_validate(row)
     except HTTPException:
         raise

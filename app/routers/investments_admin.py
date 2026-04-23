@@ -18,6 +18,7 @@ from app.schemas.investment import (
 from app.utils.investment_id import new_investment_id
 from app.utils.db_column_names import camel_participant_pk_column, camel_partner_pk_column
 from app.services.investment_actions import replace_payment_schedules
+from app.services.participant_portfolio_recalc import recalculate_participant_portfolio, recalc_from_investment_id
 from app.utils.patch_payload import dump_update_or_400
 from app.utils.supabase_errors import format_api_error
 
@@ -298,6 +299,7 @@ def admin_create_investment(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not read investment after insert.",
         )
+    recalculate_participant_portfolio(str(payload.participantId).strip())
     return InvestmentResponse.model_validate(row)
 
 
@@ -371,6 +373,7 @@ def admin_patch_investment(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Could not read investment after update.",
             )
+        recalc_from_investment_id(investment_id)
         return InvestmentResponse.model_validate(row)
     except HTTPException:
         raise
@@ -447,6 +450,7 @@ def admin_patch_investment_status(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Could not read investment after update.",
             )
+        recalc_from_investment_id(investment_id)
         return InvestmentResponse.model_validate(out)
     except HTTPException:
         raise
@@ -462,7 +466,8 @@ def admin_delete_investment(
     investment_id: str,
     _: dict = Depends(require_role(["admin"])),
 ):
-    _row_inv_or_404(investment_id)
+    inv = _row_inv_or_404(investment_id)
+    part_id = str(inv.get("participantId") or "").strip()
     try:
         supabase.table(_TABLE).delete().eq("investmentId", investment_id).execute()
     except APIError as e:
@@ -470,4 +475,6 @@ def admin_delete_investment(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=format_api_error(e),
         ) from e
+    if part_id:
+        recalculate_participant_portfolio(part_id)
     return {"message": "Investment deleted", "investmentId": investment_id}

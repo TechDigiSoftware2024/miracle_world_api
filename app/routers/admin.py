@@ -13,7 +13,7 @@ from app.core.security import create_token, decode_token
 from app.schemas.auth import LoginRequest, TokenResponse
 from app.schemas.admin import AdminResponse
 from app.schemas.user_request import RequestResponse
-from app.schemas.participant import ParticipantResponse, ParticipantUpdate
+from app.schemas.participant import AdminParticipantProfilePatch, ParticipantResponse
 from app.schemas.partner import PartnerResponse, PartnerUpdate
 from app.schemas.contact import ContactQueryResponse
 from app.schemas.app_settings import AppSettingsResponse, AppSettingsUpdate
@@ -317,8 +317,8 @@ def admin_delete_partner(
 @router.patch("/participants/{participantId}", response_model=ParticipantResponse)
 def admin_patch_participant(
     participantId: str,
-    payload: ParticipantUpdate,
-    current_user: dict = Depends(require_role(["admin"])),
+    payload: AdminParticipantProfilePatch,
+    _: dict = Depends(require_role(["admin"])),
 ):
     data = dump_update_or_400(payload)
     try:

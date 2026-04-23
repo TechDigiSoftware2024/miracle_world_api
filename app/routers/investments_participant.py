@@ -12,6 +12,10 @@ from app.schemas.investment import (
     InvestmentResponse,
     PaymentScheduleResponse,
 )
+from app.services.participant_portfolio_recalc import (
+    recalc_from_investment_id,
+    recalculate_participant_portfolio,
+)
 from app.utils.investment_id import new_investment_id
 from app.utils.patch_payload import dump_update_or_400
 from app.utils.supabase_errors import format_api_error
@@ -79,6 +83,7 @@ def participant_create_investment(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not read investment after insert.",
         )
+    recalculate_participant_portfolio(pid)
     return InvestmentResponse.model_validate(row)
 
 
@@ -169,6 +174,7 @@ def participant_patch_investment_doc(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Could not read investment after update.",
             )
+        recalc_from_investment_id(investment_id)
         return InvestmentResponse.model_validate(out)
     except HTTPException:
         raise

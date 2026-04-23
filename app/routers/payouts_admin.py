@@ -12,6 +12,7 @@ from app.utils.payout_id import new_payout_id
 from app.utils.payout_query import fetch_payout_rows
 from app.utils.patch_payload import dump_update_or_400
 from app.utils.supabase_errors import format_api_error
+from app.services.participant_portfolio_recalc import recalculate_participant_portfolio
 
 router = APIRouter(prefix="/payouts", tags=["Admin", "Payouts"])
 
@@ -42,6 +43,11 @@ def _assert_recipient_exists(user_id: str, recipient_type: str) -> None:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"No {recipient_type} found for userId {uid}",
         )
+
+
+def _recalc_if_participant_payout(user_id: str, recipient_type: str) -> None:
+    if str(recipient_type or "").strip() == "participant":
+        recalculate_participant_portfolio(str(user_id or "").strip())
 
 
 def _validate_investment_for_user(
@@ -124,6 +130,7 @@ def admin_create_payout(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not read payout after insert.",
         )
+    _recalc_if_participant_payout(payload.userId, payload.recipientType)
     return PayoutResponse.model_validate(row)
 
 
@@ -222,6 +229,13 @@ def admin_update_payout(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not read payout after update.",
         )
+    new_uid = str(row.get("userId", "")).strip()
+    new_rt = str(row.get("recipientType", "")).strip()
+    old_uid = str(existing.get("userId", "")).strip()
+    old_rt = str(existing.get("recipientType", "")).strip()
+    _recalc_if_participant_payout(old_uid, old_rt)
+    if new_uid != old_uid or new_rt != old_rt:
+        _recalc_if_participant_payout(new_uid, new_rt)
     return PayoutResponse.model_validate(row)
 
 
@@ -230,7 +244,9 @@ def admin_delete_payout(
     payout_id: str,
     _: dict = Depends(require_role(["admin"])),
 ):
-    _row_or_404(payout_id)
+    existing = _row_or_404(payout_id)
+    old_uid = str(existing.get("userId", "")).strip()
+    old_rt = str(existing.get("recipientType", "")).strip()
     try:
         supabase.table(_TABLE).delete().eq("payoutId", payout_id).execute()
     except APIError as e:
@@ -238,4 +254,5 @@ def admin_delete_payout(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=format_api_error(e),
         ) from e
+    _recalc_if_participant_payout(old_uid, old_rt)
     return {"message": "Payout deleted", "payoutId": payout_id}

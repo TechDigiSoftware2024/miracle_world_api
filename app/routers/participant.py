@@ -8,8 +8,8 @@ from app.db.database import supabase
 from app.dependencies.auth import bearer_scheme, require_role
 from app.core.security import create_token, decode_token
 from app.schemas.participant import (
+    ParticipantProfilePatch,
     ParticipantResponse,
-    ParticipantUpdate,
     PartnerSearchResponse,
 )
 from app.schemas.auth import LoginRequest, TokenResponse
@@ -105,7 +105,7 @@ def get_participant_profile(
 
 @router.patch("/profile", response_model=ParticipantResponse)
 def patch_participant_profile(
-    payload: ParticipantUpdate,
+    payload: ParticipantProfilePatch,
     current_user: dict = Depends(require_role(["participant"])),
 ):
     data = dump_update_or_400(payload)
