@@ -30,6 +30,14 @@ class ParticipantResponse(BaseModel):
     lastVisit: Optional[datetime] = None
     lastUpdated: Optional[datetime] = None
     createdAt: datetime
+    isEligible: bool = Field(
+        default=False,
+        description="When true, participant may see assigned special fund types in fund-type lists.",
+    )
+    eligibleSpecialFundIds: list[int] = Field(
+        default_factory=list,
+        description="fund_types.id values explicitly assigned to this participant (special funds only).",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -47,6 +55,10 @@ class ParticipantResponse(BaseModel):
         ):
             if data.get(k) is None:
                 data[k] = v
+        if data.get("isEligible") is None:
+            data["isEligible"] = False
+        if data.get("eligibleSpecialFundIds") is None:
+            data["eligibleSpecialFundIds"] = []
         return data
 
 
@@ -69,6 +81,10 @@ class AdminParticipantProfilePatch(BaseModel):
     email: Optional[str] = None
     address: Optional[str] = None
     mpin: Optional[str] = Field(default=None, min_length=4, max_length=32)
+    isEligible: Optional[bool] = Field(
+        default=None,
+        description="Whether the participant is eligible for assigned special funds in app fund lists.",
+    )
 
 
 class PartnerSearchResponse(BaseModel):

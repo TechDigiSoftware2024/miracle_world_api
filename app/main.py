@@ -15,6 +15,7 @@ from app.routers.app_settings_public import router as app_settings_public_router
 from app.routers.unified_login import router as unified_login_router
 from app.routers.otp_auth import router as otp_auth_router
 from app.routers.admin import router as admin_router
+from app.routers.participant_special_funds_admin import router as participant_special_funds_admin_router
 from app.routers.participant import router as participant_router
 from app.routers.partner import router as partner_router
 from app.routers.fund_types_public import router as fund_types_public_router
@@ -64,7 +65,7 @@ API_DESCRIPTION = """
 7. **Protected routes** need header: `Authorization: Bearer <access_token>` from login.
 8. In **Swagger UI**, click **Authorize**, paste the token only (not the word Bearer), then call admin endpoints.
 9. **Approve request**: `PUT /admin/request/{request_id}/approve` creates a row in **participants** or **partners** based on the request role and sets a new mpin on the request record.
-10. **Admin directory**: Participants/partners/contact-queries/settings; user `DELETE`/`PATCH` by **`participantId`** / **`partnerId`**. **Fund types**: admin CRUD under `/admin/fund-types` (body field **`duration`** is total months only; **`isProfitCapitalPerMonth`**, **`isSpecial`** booleans); public `GET /fund-types` (active only). **Properties**: admin `GET|POST /admin/properties`, `GET|PATCH|DELETE /admin/properties/{id}`; **public (no token)** `GET /properties` (optional `?status=&type=&purpose=&city=`) and `GET /properties/{id}` for participant dashboards.
+10. **Admin directory**: Participants/partners/contact-queries/settings; user `DELETE`/`PATCH` by **`participantId`** / **`partnerId`**. **Fund types**: admin CRUD under `/admin/fund-types` (optional query **`isSpecial`** to list only special funds; body field **`duration`** is total months only; **`isProfitCapitalPerMonth`**, **`isSpecial`** booleans); public `GET /fund-types` (active only — prefer participant-scoped list in apps). **Special funds**: SQL `supabase_participants_special_funds.sql` adds **`participants.isEligible`** and **`participant_special_funds`**. Admin **`POST /admin/participants/special-funds/assign`** (body **`participantIds`**, **`fundTypeIds`**, optional **`setIsEligible`**) and **`POST .../remove`**; **`GET /admin/participants/special-funds/{participantId}`**. **`PATCH /admin/participants/{participantId}`** may set **`isEligible`**. Participants: **`GET /participant/fund-types`** (Bearer) returns non-special active funds plus assigned special funds when eligible; profile includes **`isEligible`** and **`eligibleSpecialFundIds`**. **Properties**: admin `GET|POST /admin/properties`, `GET|PATCH|DELETE /admin/properties/{id}`; **public (no token)** `GET /properties` (optional `?status=&type=&purpose=&city=`) and `GET /properties/{id}` for participant dashboards.
 11. **Self profile**: `PATCH /participant/profile` — only **`name`**, **`email`**, **`address`** (no phone, mpin, financials, or portfolio fields; those are server-managed). **`PATCH /admin/participants/{participantId}`** — same fields plus optional **`mpin`**. Participant portfolio columns (**`activeInvestmentsCount`**, **`totalPrincipalAmount`**, **`pendingScheduleAmount`**, **`schedulePaidAmount`**, **`payoutsPaidAmount`**, **`totalPortfolioValue`**, **`portfolioUpdatedAt`**) are recalculated when investments, payment schedule lines, or participant payouts change. SQL: `supabase_participants_portfolio_columns.sql`. **`PATCH /partner/profile`**: partner fields as before — **phone** cannot be updated. **Participant partner search**: `GET /participant/partners/search` with exactly one query param **`name`**, **`partnerId`**, or **`phone`** — returns **`partnerId`**, **`name`**, **`phone`** (one match).
 12. **Bank details**: User `GET /bank-details/user/{userId}` (participant/partner own `userId` from login, or admin), `POST /bank-details`, `PUT /bank-details/{id}`. Admin `GET /admin/bank-details/pending`, `GET /admin/bank-details/{id}`, `PATCH /admin/bank-details/{id}/status`. Create table from `supabase_bank_details_table.sql`.
 13. **Nominees**: User `GET /nominees/user/{userId}`, `POST /nominees`, `PUT /nominees/{id}`. Admin `GET /admin/nominees`, `GET /admin/nominees/pending`, `GET /admin/nominees/user/{userId}`, `GET /admin/nominees/{id}`, `PATCH /admin/nominees/{id}/status`, `DELETE /admin/nominees/{id}`. Create table from `supabase_nominees_table.sql`.
@@ -201,7 +202,7 @@ except APIError as e:
             "supabase_nominees_table.sql, supabase_manual_kyc_table.sql, "
             "supabase_manual_kyc_kyc_type_add_both.sql, supabase_reward_programs_tables.sql, "
             "supabase_investments_tables.sql, supabase_payouts_table.sql, "
-            "supabase_participants_portfolio_columns.sql)."
+            "supabase_participants_portfolio_columns.sql, supabase_participants_special_funds.sql)."
         )
 except Exception as e:
     logger.warning("seed_defaults failed: %s", e)
@@ -214,6 +215,7 @@ app.include_router(properties_public_router)
 app.include_router(unified_login_router)
 app.include_router(otp_auth_router)
 app.include_router(admin_router)
+app.include_router(participant_special_funds_admin_router, prefix="/admin")
 app.include_router(fund_types_admin_router, prefix="/admin")
 app.include_router(properties_admin_router, prefix="/admin")
 app.include_router(bank_details_user_router)

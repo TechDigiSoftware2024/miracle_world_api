@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from postgrest.exceptions import APIError
 
 from app.db.database import supabase
@@ -27,15 +27,17 @@ def _row_or_404(fund_id: int) -> dict:
 
 @router.get("", response_model=List[FundTypeResponse])
 def admin_list_fund_types(
+    isSpecial: Optional[bool] = Query(
+        default=None,
+        description="If set, return only fund types with this isSpecial value (e.g. true for special funds).",
+    ),
     current_user: dict = Depends(require_role(["admin"])),
 ):
     try:
-        result = (
-            supabase.table(_TABLE)
-            .select("*")
-            .order("createdAt", desc=True)
-            .execute()
-        )
+        q = supabase.table(_TABLE).select("*")
+        if isSpecial is not None:
+            q = q.eq("isSpecial", isSpecial)
+        result = q.order("createdAt", desc=True).execute()
     except APIError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

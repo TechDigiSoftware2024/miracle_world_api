@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials
@@ -13,6 +13,7 @@ from app.schemas.participant import (
     PartnerSearchResponse,
 )
 from app.schemas.auth import LoginRequest, TokenResponse
+from app.schemas.fund_type import FundTypeResponse
 from app.schemas.schedule_visit import (
     ScheduleVisitCreate,
     ScheduleVisitDeleteResponse,
@@ -20,6 +21,10 @@ from app.schemas.schedule_visit import (
 )
 from app.utils.db_column_names import camel_partner_pk_column
 from app.utils.patch_payload import dump_update_or_400
+from app.utils.participant_fund_types import (
+    enrich_participant_row_with_special_fund_ids,
+    fetch_visible_fund_type_rows,
+)
 from app.utils.phone_normalize import is_plausible_in_mobile, normalize_phone_digits
 from app.utils.supabase_errors import format_api_error
 
@@ -97,7 +102,9 @@ def get_participant_profile(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Participant not found",
         )
-    return result.data[0]
+    uid = str(current_user.get("userId", "")).strip()
+    row = enrich_participant_row_with_special_fund_ids(dict(result.data[0]), uid)
+    return ParticipantResponse.model_validate(row)
 
 
 # ─── PROTECTED: Update profile (phone cannot be changed) ────────
@@ -130,7 +137,10 @@ def patch_participant_profile(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Participant not found",
             )
-        return row
+        uid = str(current_user.get("userId", "")).strip()
+        return ParticipantResponse.model_validate(
+            enrich_participant_row_with_special_fund_ids(row, uid)
+        )
     except HTTPException:
         raise
     except APIError as e:
@@ -308,3 +318,21 @@ def participant_delete_schedule_visit(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=format_api_error(e),
         ) from e
+
+
+@router.get(
+    "/fund-types",
+    response_model=List[FundTypeResponse],
+    summary="List fund types for the logged-in participant",
+)
+def participant_list_fund_types(
+    current_user: dict = Depends(require_role(["participant"])),
+):
+    """
+    Returns **active** fund types: always non-special funds, plus **special** funds this participant
+    is assigned when **`isEligible`** is true. Use this instead of public `GET /fund-types` in the
+    participant app so restricted funds stay hidden.
+    """
+    uid = str(current_user.get("userId", "")).strip()
+    raw_rows = fetch_visible_fund_type_rows(uid)
+    return [FundTypeResponse.model_validate(row) for row in raw_rows]

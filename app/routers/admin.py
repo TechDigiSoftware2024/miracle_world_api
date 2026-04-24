@@ -23,6 +23,7 @@ from app.utils.db_column_names import camel_participant_pk_column, camel_partner
 from app.utils.patch_payload import dump_update_or_400
 from app.utils.supabase_errors import format_api_error
 from app.utils.app_settings_repo import fetch_app_settings_row
+from app.utils.participant_fund_types import enrich_participant_row_with_special_fund_ids
 from app.utils.supabase_columns import (
     approve_keys,
     introducer_id_from_row,
@@ -354,7 +355,7 @@ def admin_patch_participant(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Could not read participant after update.",
             )
-        return row
+        return enrich_participant_row_with_special_fund_ids(row, participantId)
     except HTTPException:
         raise
     except APIError as e:
