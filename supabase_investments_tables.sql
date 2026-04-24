@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS investments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_investments_participant ON investments ("participantId");
+CREATE INDEX IF NOT EXISTS idx_investments_agent ON investments ("agentId");
 CREATE INDEX IF NOT EXISTS idx_investments_status ON investments (status);
 CREATE INDEX IF NOT EXISTS idx_investments_created ON investments ("createdAt" DESC);
 

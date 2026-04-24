@@ -71,7 +71,7 @@ def approve_keys(style: str) -> dict:
         "a_mpin": "mpin",
         "a_profile": "profileImage",
         "a_status": "status",
-        "a_commission": "commission",
+        "a_commission": "introducerCommission",
         "a_self_commission": "selfCommission",
         "a_self_profit": "selfProfit",
         "a_gen_profit": "generatedProfitByTeam",

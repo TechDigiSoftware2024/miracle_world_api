@@ -18,6 +18,7 @@ from app.schemas.investment import (
 from app.utils.investment_id import new_investment_id
 from app.utils.db_column_names import camel_participant_pk_column, camel_partner_pk_column
 from app.services.investment_actions import replace_payment_schedules
+from app.services.partner_portfolio_recalc import recalculate_partner_portfolio
 from app.services.participant_portfolio_recalc import recalculate_participant_portfolio, recalc_from_investment_id
 from app.utils.patch_payload import dump_update_or_400
 from app.utils.supabase_errors import format_api_error
@@ -299,7 +300,11 @@ def admin_create_investment(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not read investment after insert.",
         )
-    recalculate_participant_portfolio(str(payload.participantId).strip())
+    part = str(payload.participantId).strip()
+    recalculate_participant_portfolio(part)
+    ag = str(payload.agentId or "").strip()
+    if ag:
+        recalculate_partner_portfolio(ag)
     return InvestmentResponse.model_validate(row)
 
 
@@ -339,7 +344,8 @@ def admin_patch_investment(
     payload: InvestmentAdminUpdate,
     _: dict = Depends(require_role(["admin"])),
 ):
-    _row_inv_or_404(investment_id)
+    before = _row_inv_or_404(investment_id)
+    old_agent = str(before.get("agentId") or "").strip()
     data = dump_update_or_400(payload)
     flat = {}
     for k, v in data.items():
@@ -374,6 +380,9 @@ def admin_patch_investment(
                 detail="Could not read investment after update.",
             )
         recalc_from_investment_id(investment_id)
+        new_agent = str(row.get("agentId") or "").strip()
+        if old_agent and old_agent != new_agent:
+            recalculate_partner_portfolio(old_agent)
         return InvestmentResponse.model_validate(row)
     except HTTPException:
         raise
@@ -468,6 +477,7 @@ def admin_delete_investment(
 ):
     inv = _row_inv_or_404(investment_id)
     part_id = str(inv.get("participantId") or "").strip()
+    agent_id = str(inv.get("agentId") or "").strip()
     try:
         supabase.table(_TABLE).delete().eq("investmentId", investment_id).execute()
     except APIError as e:
@@ -477,4 +487,6 @@ def admin_delete_investment(
         ) from e
     if part_id:
         recalculate_participant_portfolio(part_id)
+    if agent_id:
+        recalculate_partner_portfolio(agent_id)
     return {"message": "Investment deleted", "investmentId": investment_id}

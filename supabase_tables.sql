@@ -40,12 +40,21 @@ CREATE TABLE IF NOT EXISTS partners (
     mpin TEXT NOT NULL,
     "profileImage" TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'active',
-    commission DOUBLE PRECISION NOT NULL DEFAULT 0,
+    "introducerCommission" DOUBLE PRECISION NOT NULL DEFAULT 0,
     "selfCommission" DOUBLE PRECISION NOT NULL DEFAULT 0,
     "selfProfit" DOUBLE PRECISION NOT NULL DEFAULT 0,
     "generatedProfitByTeam" DOUBLE PRECISION NOT NULL DEFAULT 0,
     "totalDeals" INT NOT NULL DEFAULT 0,
     "totalTeamMembers" INT NOT NULL DEFAULT 0,
+    "portfolioAmount" DOUBLE PRECISION NOT NULL DEFAULT 0,
+    "paidAmount" DOUBLE PRECISION NOT NULL DEFAULT 0,
+    "pendingAmount" DOUBLE PRECISION NOT NULL DEFAULT 0,
+    "perMonthPendingAmount" DOUBLE PRECISION NOT NULL DEFAULT 0,
+    "participantInvestedTotal" DOUBLE PRECISION NOT NULL DEFAULT 0,
+    "introducerCommissionAmount" DOUBLE PRECISION NOT NULL DEFAULT 0,
+    "selfEarningAmount" DOUBLE PRECISION NOT NULL DEFAULT 0,
+    "teamEarningAmount" DOUBLE PRECISION NOT NULL DEFAULT 0,
+    "portfolioUpdatedAt" TIMESTAMPTZ,
     "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -337,6 +346,7 @@ CREATE TABLE IF NOT EXISTS investments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_investments_participant ON investments ("participantId");
+CREATE INDEX IF NOT EXISTS idx_investments_agent ON investments ("agentId");
 CREATE INDEX IF NOT EXISTS idx_investments_status ON investments (status);
 CREATE INDEX IF NOT EXISTS idx_investments_created ON investments ("createdAt" DESC);
 

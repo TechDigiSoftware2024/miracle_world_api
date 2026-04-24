@@ -12,6 +12,7 @@ from app.utils.payout_id import new_payout_id
 from app.utils.payout_query import fetch_payout_rows
 from app.utils.patch_payload import dump_update_or_400
 from app.utils.supabase_errors import format_api_error
+from app.services.partner_portfolio_recalc import recalculate_partner_portfolio
 from app.services.participant_portfolio_recalc import recalculate_participant_portfolio
 
 router = APIRouter(prefix="/payouts", tags=["Admin", "Payouts"])
@@ -48,6 +49,11 @@ def _assert_recipient_exists(user_id: str, recipient_type: str) -> None:
 def _recalc_if_participant_payout(user_id: str, recipient_type: str) -> None:
     if str(recipient_type or "").strip() == "participant":
         recalculate_participant_portfolio(str(user_id or "").strip())
+
+
+def _recalc_if_partner_payout(user_id: str, recipient_type: str) -> None:
+    if str(recipient_type or "").strip() == "partner":
+        recalculate_partner_portfolio(str(user_id or "").strip())
 
 
 def _validate_investment_for_user(
@@ -131,6 +137,7 @@ def admin_create_payout(
             detail="Could not read payout after insert.",
         )
     _recalc_if_participant_payout(payload.userId, payload.recipientType)
+    _recalc_if_partner_payout(payload.userId, payload.recipientType)
     return PayoutResponse.model_validate(row)
 
 
@@ -234,8 +241,10 @@ def admin_update_payout(
     old_uid = str(existing.get("userId", "")).strip()
     old_rt = str(existing.get("recipientType", "")).strip()
     _recalc_if_participant_payout(old_uid, old_rt)
+    _recalc_if_partner_payout(old_uid, old_rt)
     if new_uid != old_uid or new_rt != old_rt:
         _recalc_if_participant_payout(new_uid, new_rt)
+        _recalc_if_partner_payout(new_uid, new_rt)
     return PayoutResponse.model_validate(row)
 
 
@@ -255,4 +264,5 @@ def admin_delete_payout(
             detail=format_api_error(e),
         ) from e
     _recalc_if_participant_payout(old_uid, old_rt)
+    _recalc_if_partner_payout(old_uid, old_rt)
     return {"message": "Payout deleted", "payoutId": payout_id}

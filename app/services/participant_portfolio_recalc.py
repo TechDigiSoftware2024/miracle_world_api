@@ -182,12 +182,24 @@ def recalculate_participant_portfolio(participant_id: str) -> None:
 
 def recalc_from_investment_id(investment_id: str) -> None:
     try:
-        r = supabase.table(_INVEST).select("participantId").eq("investmentId", investment_id).limit(1).execute()
+        r = (
+            supabase.table(_INVEST)
+            .select("participantId,agentId")
+            .eq("investmentId", investment_id)
+            .limit(1)
+            .execute()
+        )
     except APIError as e:
         logger.warning("recalc_from_investment_id: %s", e)
         return
     if not r.data:
         return
-    pid = str(r.data[0].get("participantId") or "").strip()
+    row = r.data[0]
+    pid = str(row.get("participantId") or "").strip()
     if pid:
         recalculate_participant_portfolio(pid)
+    aid = str(row.get("agentId") or "").strip()
+    if aid:
+        from app.services.partner_portfolio_recalc import recalculate_partner_portfolio
+
+        recalculate_partner_portfolio(aid)

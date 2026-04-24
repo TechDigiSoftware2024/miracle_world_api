@@ -14,7 +14,8 @@ from app.schemas.auth import LoginRequest, TokenResponse
 from app.schemas.admin import AdminResponse
 from app.schemas.user_request import RequestResponse
 from app.schemas.participant import AdminParticipantProfilePatch, ParticipantResponse
-from app.schemas.partner import PartnerResponse, PartnerUpdate
+from app.schemas.investment import InvestmentResponse
+from app.schemas.partner import AdminPartnerProfilePatch, PartnerResponse, PartnerTeamMemberNode
 from app.schemas.contact import ContactQueryResponse
 from app.schemas.app_settings import AppSettingsResponse, AppSettingsUpdate
 from app.schemas.schedule_visit import ScheduleVisitDeleteResponse, ScheduleVisitResponse
@@ -23,6 +24,9 @@ from app.utils.db_column_names import camel_participant_pk_column, camel_partner
 from app.utils.patch_payload import dump_update_or_400
 from app.utils.supabase_errors import format_api_error
 from app.utils.app_settings_repo import fetch_app_settings_row
+from app.services.partner_portfolio_recalc import recalculate_partner_portfolio
+from app.utils.partner_commission import sync_children_introducer_commission_rates
+from app.utils.partner_team import team_tree_for_partner
 from app.utils.participant_fund_types import enrich_participant_row_with_special_fund_ids
 from app.utils.supabase_columns import (
     approve_keys,
@@ -216,6 +220,132 @@ def admin_list_partners(
     return result.data
 
 
+def _assert_children_fit_parent_self_commission(partner_id: str, new_cap: float) -> None:
+    prid = camel_partner_pk_column()
+    try:
+        r = (
+            supabase.table("partners")
+            .select(f"{prid},selfCommission")
+            .eq("introducer", partner_id)
+            .execute()
+        )
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+    for row in r.data or []:
+        cs = float(row.get("selfCommission") or 0)
+        if cs > new_cap + 1e-9:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Direct partner {row[prid]} has selfCommission {cs}, above the new cap {new_cap}. "
+                    "Lower child selfCommission values first."
+                ),
+            )
+
+
+@router.get("/partners/{partnerId}", response_model=PartnerResponse)
+def admin_get_partner(
+    partnerId: str,
+    _: dict = Depends(require_role(["admin"])),
+):
+    prid = camel_partner_pk_column()
+    try:
+        result = (
+            supabase.table("partners")
+            .select("*")
+            .eq(prid, partnerId)
+            .limit(1)
+            .execute()
+        )
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+    if not result.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Partner not found",
+        )
+    return PartnerResponse.model_validate(result.data[0])
+
+
+@router.get("/partners/{partnerId}/team", response_model=PartnerTeamMemberNode)
+def admin_get_partner_team_tree(
+    partnerId: str,
+    _: dict = Depends(require_role(["admin"])),
+):
+    prid = camel_partner_pk_column()
+    try:
+        exists = (
+            supabase.table("partners")
+            .select(prid)
+            .eq(prid, partnerId)
+            .limit(1)
+            .execute()
+        )
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+    if not exists.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Partner not found",
+        )
+    tree = team_tree_for_partner(partnerId)
+    if tree is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Partner not found",
+        )
+    return tree
+
+
+@router.get("/partners/{partnerId}/investments", response_model=List[InvestmentResponse])
+def admin_list_partner_investments(
+    partnerId: str,
+    _: dict = Depends(require_role(["admin"])),
+):
+    prid = camel_partner_pk_column()
+    try:
+        exists = (
+            supabase.table("partners")
+            .select(prid)
+            .eq(prid, partnerId)
+            .limit(1)
+            .execute()
+        )
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+    if not exists.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Partner not found",
+        )
+    try:
+        result = (
+            supabase.table("investments")
+            .select("*")
+            .eq("agentId", partnerId)
+            .order("createdAt", desc=True)
+            .execute()
+        )
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+    return [InvestmentResponse.model_validate(r) for r in (result.data or [])]
+
+
 @router.get("/schedule-visits", response_model=List[ScheduleVisitResponse])
 def admin_list_schedule_visits(
     current_user: dict = Depends(require_role(["admin"])),
@@ -368,10 +498,12 @@ def admin_patch_participant(
 @router.patch("/partners/{partnerId}", response_model=PartnerResponse)
 def admin_patch_partner(
     partnerId: str,
-    payload: PartnerUpdate,
+    payload: AdminPartnerProfilePatch,
     current_user: dict = Depends(require_role(["admin"])),
 ):
     data = dump_update_or_400(payload)
+    if payload.selfCommission is not None:
+        _assert_children_fit_parent_self_commission(partnerId, float(payload.selfCommission))
     try:
         prid = camel_partner_pk_column()
         existing = (
@@ -405,7 +537,18 @@ def admin_patch_partner(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Could not read partner after update.",
             )
-        return row
+        if "selfCommission" in data:
+            sync_children_introducer_commission_rates(partnerId)
+        recalculate_partner_portfolio(partnerId)
+        refetch2 = (
+            supabase.table("partners")
+            .select("*")
+            .eq(prid, partnerId)
+            .execute()
+        )
+        if refetch2.data:
+            row = refetch2.data[0]
+        return PartnerResponse.model_validate(row)
     except HTTPException:
         raise
     except APIError as e:
@@ -551,8 +694,9 @@ def approve_request(
                     detail="Partner account already exists for this phone",
                 )
 
-            supabase.table("partners").insert({
-                k["a_partner"]: generate_partner_id(id_column=k["a_partner"]),
+            new_partner_id = generate_partner_id(id_column=k["a_partner"])
+            ins = supabase.table("partners").insert({
+                k["a_partner"]: new_partner_id,
                 k["a_name"]: name,
                 k["a_phone"]: phone,
                 k["a_email"]: "",
@@ -568,6 +712,25 @@ def approve_request(
                 k["a_deals"]: 0,
                 k["a_team"]: 0,
             }).execute()
+            cid = str(new_partner_id)
+            if ins.data and ins.data[0].get(k["a_partner"]):
+                cid = str(ins.data[0][k["a_partner"]])
+            try:
+                parent_row = (
+                    supabase.table("partners")
+                    .select("selfCommission")
+                    .eq(k["a_partner"], introducer_id)
+                    .limit(1)
+                    .execute()
+                )
+                if parent_row.data:
+                    p_self = float(parent_row.data[0].get("selfCommission") or 0)
+                    intro_ic = max(0.0, round(p_self, 4))
+                    supabase.table("partners").update({
+                        "introducerCommission": intro_ic,
+                    }).eq(k["a_partner"], cid).execute()
+            except APIError:
+                pass
 
         else:
             raise HTTPException(

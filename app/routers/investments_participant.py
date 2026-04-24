@@ -12,6 +12,7 @@ from app.schemas.investment import (
     InvestmentResponse,
     PaymentScheduleResponse,
 )
+from app.services.partner_portfolio_recalc import recalculate_partner_portfolio
 from app.services.participant_portfolio_recalc import (
     recalc_from_investment_id,
     recalculate_participant_portfolio,
@@ -84,6 +85,9 @@ def participant_create_investment(
             detail="Could not read investment after insert.",
         )
     recalculate_participant_portfolio(pid)
+    ag = str(payload.agentId or "").strip()
+    if ag:
+        recalculate_partner_portfolio(ag)
     return InvestmentResponse.model_validate(row)
 
 
