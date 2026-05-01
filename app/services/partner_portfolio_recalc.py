@@ -1,5 +1,5 @@
 """
-Recompute partner MLM / book summary columns from downline investments, schedules, and payouts.
+Recompute partner MLM / portfolio summary columns from downline investments and partner commission schedules.
 """
 
 import calendar
@@ -17,8 +17,6 @@ from app.utils.portfolio_calendar import next_month_bounds_utc
 logger = logging.getLogger(__name__)
 
 _INVEST = "investments"
-_PS = "payment_schedules"
-_PAYOUTS = "payouts"
 
 # Principal counted toward participantInvestedTotal / introducer % base
 _PRINCIPAL_STATUSES = frozenset(
@@ -76,6 +74,11 @@ def recalculate_partner_upline_chain(partner_id: str) -> None:
 def recalculate_partner_portfolio(partner_id: str) -> None:
     """
     Recompute and persist portfolio / MLM aggregates for one partner (userId = agentId on investments).
+
+    ``portfolioAmount`` / ``paidAmount`` / ``selfEarningAmount`` / ``teamEarningAmount`` count only
+    **paid** ``partner_commission_schedules`` rows. ``pendingAmount`` sums **pending** + **due** rows.
+    Participant payment schedule PATCH mirrors commission line status per month (see
+    ``sync_partner_commission_status_for_month``).
     """
     pid = str(partner_id or "").strip()
     if not pid:
@@ -97,38 +100,14 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
         return
 
     participant_invested = 0.0
-    inv_ids_principal: list[str] = []
-    inv_by_id: dict[str, dict] = {}
     for r in invs:
         iid = str(r.get("investmentId") or "").strip()
         if not iid:
             continue
-        inv_by_id[iid] = r
         st = str(r.get("status") or "").strip()
         if st in _PRINCIPAL_STATUSES:
             participant_invested += _f(r.get("investedAmount"))
-            inv_ids_principal.append(iid)
 
-    schedule_pending_total = 0.0
-    if inv_ids_principal:
-        try:
-            ps_res = supabase.table(_PS).select("*").in_("investmentId", inv_ids_principal).execute()
-        except APIError as e:
-            logger.warning("recalculate_partner_portfolio: schedules query failed for %s: %s", pid, e)
-            ps_res = type("R", (), {"data": []})()
-
-        for line in ps_res.data or []:
-            iid = str(line.get("investmentId") or "").strip()
-            if iid not in inv_by_id:
-                continue
-            amt = _f(line.get("amount"))
-            st = str(line.get("status") or "").strip()
-            if st in ("pending", "due"):
-                schedule_pending_total += amt
-
-    portfolio_amount = participant_invested + schedule_pending_total
-
-    # Deals = investments linked as agent that are Active or have completed/matured (not Processing / Pending Approval).
     total_deals = sum(
         1
         for r in invs
@@ -137,30 +116,9 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
 
     total_team_members = count_downline_partners(pid)
 
-    paid_total = 0.0
-    pending_total = 0.0
-    try:
-        po_res = (
-            supabase.table(_PAYOUTS)
-            .select("amount,status")
-            .eq("userId", pid)
-            .eq("recipientType", "partner")
-            .execute()
-        )
-        for p in po_res.data or []:
-            a = _f(p.get("amount"))
-            st = str(p.get("status") or "").strip()
-            if st == "paid":
-                paid_total += a
-            elif st in ("pending", "processing"):
-                pending_total += a
-    except APIError as e:
-        logger.warning("recalculate_partner_portfolio: payouts query failed for %s: %s", pid, e)
-
-    # Commission accruals (generated when investments go Active): level 0 = direct deal share; >=1 = upline/team.
-    # perMonthPendingAmount uses pending/due rows in the current UTC month from the same table.
-    self_earn = 0.0
-    team_earn = 0.0
+    self_earn_paid = 0.0
+    team_earn_paid = 0.0
+    commission_pending = 0.0
     per_month_pending = 0.0
     nm_lo, nm_hi = next_month_bounds_utc()
     upcoming_next_month = 0.0
@@ -178,11 +136,13 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
                 continue
             a = _f(row.get("amount"))
             lv = int(row.get("level") or 0)
-            if lv <= 0:
-                self_earn += a
-            else:
-                team_earn += a
-            if st in ("pending", "due"):
+            if st == "paid":
+                if lv <= 0:
+                    self_earn_paid += a
+                else:
+                    team_earn_paid += a
+            elif st in ("pending", "due"):
+                commission_pending += a
                 pds = str(row.get("payoutDate") or "")
                 if pds and month_lo <= pds <= month_hi:
                     per_month_pending += a
@@ -194,6 +154,9 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
             pid,
             e,
         )
+
+    portfolio_amount = self_earn_paid + team_earn_paid
+    paid_total = portfolio_amount
 
     rate_pct = 0.0
     try:
@@ -211,12 +174,12 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
     patch: dict = {
         "portfolioAmount": round(portfolio_amount, 2),
         "paidAmount": round(paid_total, 2),
-        "pendingAmount": round(pending_total, 2),
+        "pendingAmount": round(commission_pending, 2),
         "perMonthPendingAmount": round(per_month_pending, 2),
         "participantInvestedTotal": round(participant_invested, 2),
         "introducerCommissionAmount": introducer_amt,
-        "selfEarningAmount": round(self_earn, 2),
-        "teamEarningAmount": round(team_earn, 2),
+        "selfEarningAmount": round(self_earn_paid, 2),
+        "teamEarningAmount": round(team_earn_paid, 2),
         "totalDeals": int(total_deals),
         "totalTeamMembers": int(total_team_members),
         "upcomingNetNextMonthPayment": round(upcoming_next_month, 2),

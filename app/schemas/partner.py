@@ -35,12 +35,23 @@ class PartnerResponse(BaseModel):
     createdAt: datetime
     portfolioAmount: float = Field(
         default=0,
-        description="Book view: downline principal counted in participantInvestedTotal plus unpaid schedule lines (pending/due).",
+        description=(
+            "Total **paid** partner commission for this beneficiary: sum of partner_commission_schedules "
+            "with status paid (level 0 + upline). Accruals still pending/due are not included."
+        ),
     )
-    paidAmount: float = Field(default=0, description="Total paid partner payouts (all types).")
+    paidAmount: float = Field(
+        default=0,
+        description=(
+            "Same as portfolioAmount here: total **paid** commission accruals from partner_commission_schedules."
+        ),
+    )
     pendingAmount: float = Field(
         default=0,
-        description="Partner payouts in pending or processing status.",
+        description=(
+            "Sum of partner_commission_schedules with status pending or due for this beneficiary "
+            "(commission not yet marked paid)."
+        ),
     )
     perMonthPendingAmount: float = Field(
         default=0,
@@ -60,15 +71,15 @@ class PartnerResponse(BaseModel):
     selfEarningAmount: float = Field(
         default=0,
         description=(
-            "Sum of partner_commission_schedules.amount for this partner as beneficiary with level 0 "
-            "(direct agent share), statuses pending/due/paid — populated when linked investments are Active."
+            "Sum of **paid** partner_commission_schedules.amount for this partner as beneficiary with level 0 "
+            "(direct agent share)."
         ),
     )
     teamEarningAmount: float = Field(
         default=0,
         description=(
-            "Sum of partner_commission_schedules.amount for this partner with level ≥ 1 (introducer/upline share), "
-            "statuses pending/due/paid."
+            "Sum of **paid** partner_commission_schedules.amount for this partner with level ≥ 1 "
+            "(introducer/upline share)."
         ),
     )
     portfolioUpdatedAt: Optional[datetime] = None
@@ -83,14 +94,14 @@ class PartnerResponse(BaseModel):
     @computed_field
     @property
     def selfProfit(self) -> float:
-        """API alias for ``selfEarningAmount`` (not stored on ``partners``)."""
+        """API alias for ``selfEarningAmount`` (paid commission, level 0; not stored on ``partners``)."""
 
         return self.selfEarningAmount
 
     @computed_field
     @property
     def generatedProfitByTeam(self) -> float:
-        """API alias for ``teamEarningAmount`` (not stored on ``partners``)."""
+        """API alias for ``teamEarningAmount`` (paid commission, level ≥ 1; not stored on ``partners``)."""
 
         return self.teamEarningAmount
 

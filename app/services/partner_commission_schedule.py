@@ -12,6 +12,37 @@ from app.utils.investment_schedule import calculate_payment_schedule
 _TABLE = "partner_commission_schedules"
 
 
+def sync_partner_commission_status_for_month(
+    investment_id: str,
+    month_number: int,
+    new_status: str,
+) -> None:
+    """
+    Mirror participant ``payment_schedules.status`` onto every ``partner_commission_schedules``
+    row for the same investment and month so partner portfolio (paid vs pending) stays accurate.
+    """
+    iid = str(investment_id or "").strip()
+    if not iid:
+        return
+    try:
+        mn = int(month_number)
+    except (TypeError, ValueError):
+        return
+    if mn < 1:
+        return
+    st = str(new_status or "").strip().lower()
+    if st not in ("pending", "due", "paid"):
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        supabase.table(_TABLE).update({
+            "status": st,
+            "updatedAt": now,
+        }).eq("investmentId", iid).eq("monthNumber", mn).execute()
+    except APIError:
+        pass
+
+
 def delete_partner_commission_schedules(investment_id: str) -> None:
     iid = str(investment_id or "").strip()
     if not iid:
