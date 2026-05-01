@@ -33,6 +33,7 @@ from app.routers.reward_offers_admin import router as reward_offers_admin_router
 from app.routers.investments_participant import router as investments_participant_router
 from app.routers.investments_admin import router as investments_admin_router
 from app.routers.payment_schedules_admin import router as payment_schedules_admin_router
+from app.routers.pending_payments_admin import router as pending_payments_admin_router
 from app.routers.payouts_admin import router as payouts_admin_router
 from app.routers.payouts_partner import router as payouts_partner_router
 from app.routers.payouts_participant import router as payouts_participant_router
@@ -231,6 +232,7 @@ app.include_router(reward_offers_admin_router, prefix="/admin")
 app.include_router(investments_participant_router, prefix="/participant")
 app.include_router(investments_admin_router, prefix="/admin")
 app.include_router(payment_schedules_admin_router, prefix="/admin")
+app.include_router(pending_payments_admin_router, prefix="/admin")
 app.include_router(payouts_admin_router, prefix="/admin")
 app.include_router(payouts_admin_by_recipient_router, prefix="/admin")
 app.include_router(admin_payout_recipients_router, prefix="/admin")

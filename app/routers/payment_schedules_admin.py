@@ -6,9 +6,7 @@ from postgrest.exceptions import APIError
 from app.db.database import supabase
 from app.dependencies.auth import require_role
 from app.schemas.investment import PaymentScheduleResponse, PaymentScheduleStatusPatch
-from app.services.investment_actions import sync_investment_status_with_payment_lines
-from app.services.partner_commission_schedule import sync_partner_commission_status_for_month
-from app.services.participant_portfolio_recalc import recalc_from_investment_id
+from app.services.schedule_payout_workflow import run_after_payment_schedule_row_saved
 from app.utils.patch_payload import dump_update_or_400
 from app.utils.supabase_errors import format_api_error
 
@@ -55,18 +53,7 @@ def admin_patch_payment_schedule_status(
             )
         iid = str(row.get("investmentId") or "").strip()
         if iid:
-            mn = row.get("monthNumber")
-            pst = str(row.get("status") or "").strip().lower()
-            if mn is not None and pst:
-                sync_partner_commission_status_for_month(iid, int(mn), pst)
-            try:
-                sync_investment_status_with_payment_lines(iid)
-            except APIError as e:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=format_api_error(e),
-                ) from e
-            recalc_from_investment_id(iid)
+            run_after_payment_schedule_row_saved(row)
         return PaymentScheduleResponse.model_validate(row)
     except HTTPException:
         raise
