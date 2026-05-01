@@ -14,7 +14,9 @@ from typing import Any, Optional
 from postgrest.exceptions import APIError
 
 from app.db.database import supabase
+from app.services.partner_portfolio_recalc import recalculate_partner_portfolio
 from app.utils.db_column_names import camel_participant_pk_column
+from app.utils.portfolio_calendar import next_month_bounds_utc, parse_timestamptz
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +112,8 @@ def recalculate_participant_portfolio(participant_id: str) -> None:
     schedule_pending = 0.0
     schedule_paid = 0.0
     schedule_profit = 0.0
+    nm_lo, nm_hi = next_month_bounds_utc()
+    upcoming_next_month = 0.0
 
     if inv_ids:
         try:
@@ -125,6 +129,9 @@ def recalculate_participant_portfolio(participant_id: str) -> None:
             st = str(line.get("status") or "").strip()
             if st in ("pending", "due"):
                 schedule_pending += amt
+                pd = parse_timestamptz(line.get("payoutDate"))
+                if pd is not None and nm_lo <= pd <= nm_hi:
+                    upcoming_next_month += amt
             elif st == "paid":
                 schedule_paid += amt
                 schedule_profit += _line_profit_for_portfolio(inv, amt)
@@ -162,6 +169,7 @@ def recalculate_participant_portfolio(participant_id: str) -> None:
         "schedulePaidAmount": round(schedule_paid, 2),
         "payoutsPaidAmount": round(payouts_paid_gross, 2),
         "totalPortfolioValue": round(total_portfolio, 2),
+        "upcomingNetNextMonthPayment": round(upcoming_next_month, 2),
         "portfolioUpdatedAt": now,
     }
 
@@ -200,6 +208,21 @@ def recalc_from_investment_id(investment_id: str) -> None:
         recalculate_participant_portfolio(pid)
     aid = str(row.get("agentId") or "").strip()
     if aid:
-        from app.services.partner_portfolio_recalc import recalculate_partner_portfolio
-
         recalculate_partner_portfolio(aid)
+
+    try:
+        bc = (
+            supabase.table("partner_commission_schedules")
+            .select("beneficiaryPartnerId")
+            .eq("investmentId", investment_id)
+            .execute()
+        )
+        seen_b: set[str] = set()
+        for brow in bc.data or []:
+            bid = str(brow.get("beneficiaryPartnerId") or "").strip()
+            if not bid or bid in seen_b:
+                continue
+            seen_b.add(bid)
+            recalculate_partner_portfolio(bid)
+    except APIError:
+        pass

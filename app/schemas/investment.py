@@ -14,6 +14,7 @@ InvestmentStatus = Literal[
 ]
 PaymentLineStatus = Literal["paid", "due", "pending"]
 ScheduleLineType = Literal["full", "prorata", "adjustment"]
+PartnerCommissionLineStatus = Literal["paid", "due", "pending"]
 
 
 class InvestmentParticipantCreate(BaseModel):
@@ -181,6 +182,42 @@ class PaymentScheduleStatusPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     status: PaymentLineStatus
+
+
+class PartnerCommissionScheduleResponse(BaseModel):
+    """One monthly commission accrual line for a beneficiary partner on an investment."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    id: int
+    investmentId: str = Field(
+        validation_alias=AliasChoices("investmentId", "investment_id"),
+    )
+    monthNumber: int = Field(
+        validation_alias=AliasChoices("monthNumber", "month_number"),
+    )
+    payoutDate: datetime = Field(
+        validation_alias=AliasChoices("payoutDate", "payout_date"),
+    )
+    beneficiaryPartnerId: str = Field(
+        validation_alias=AliasChoices("beneficiaryPartnerId", "beneficiary_partner_id"),
+    )
+    sourcePartnerId: str = Field(
+        default="",
+        validation_alias=AliasChoices("sourcePartnerId", "source_partner_id"),
+    )
+    level: int = Field(description="0 = direct agent on deal; 1+ = uplines.")
+    ratePercent: float = Field(
+        validation_alias=AliasChoices("ratePercent", "rate_percent"),
+        description="Snapshot % of invested principal for this line (monthly).",
+    )
+    amount: float
+    status: PartnerCommissionLineStatus
+    createdAt: datetime = Field(validation_alias=AliasChoices("createdAt", "created_at"))
+    updatedAt: Optional[datetime] = Field(
+        default=None,
+        validation_alias=AliasChoices("updatedAt", "updated_at"),
+    )
 
 
 class AdminInvestmentFundStatsItem(BaseModel):

@@ -13,11 +13,16 @@ from app.schemas.investment import (
     InvestmentAdminUpdate,
     InvestmentResponse,
     InvestmentStatusUpdate,
+    PartnerCommissionScheduleResponse,
     PaymentScheduleResponse,
 )
 from app.utils.investment_id import new_investment_id
 from app.utils.db_column_names import camel_participant_pk_column, camel_partner_pk_column
 from app.services.investment_actions import replace_payment_schedules
+from app.services.partner_commission_schedule import (
+    delete_partner_commission_schedules,
+    replace_partner_commission_schedules,
+)
 from app.services.partner_portfolio_recalc import recalculate_partner_portfolio
 from app.services.participant_portfolio_recalc import recalculate_participant_portfolio, recalc_from_investment_id
 from app.utils.patch_payload import dump_update_or_400
@@ -27,6 +32,7 @@ router = APIRouter(prefix="/investments", tags=["Admin", "Investments"])
 
 _TABLE = "investments"
 _PS = "payment_schedules"
+_PC = "partner_commission_schedules"
 
 
 def _row_inv_or_404(investment_id: str) -> dict:
@@ -330,6 +336,35 @@ def admin_list_payment_schedules(
     return [PaymentScheduleResponse.model_validate(r) for r in (result.data or [])]
 
 
+@router.get(
+    "/{investment_id}/partner-commission-schedules",
+    response_model=List[PartnerCommissionScheduleResponse],
+)
+def admin_list_partner_commission_schedules(
+    investment_id: str,
+    _: dict = Depends(require_role(["admin"])),
+):
+    """Monthly commission accrual lines (all beneficiaries) for this investment."""
+    _row_inv_or_404(investment_id)
+    try:
+        result = (
+            supabase.table(_PC)
+            .select("*")
+            .eq("investmentId", investment_id)
+            .order("monthNumber")
+            .order("level")
+            .execute()
+        )
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+    return [
+        PartnerCommissionScheduleResponse.model_validate(r) for r in (result.data or [])
+    ]
+
+
 @router.get("/{investment_id}", response_model=InvestmentResponse)
 def admin_get_investment(
     investment_id: str,
@@ -421,6 +456,7 @@ def admin_patch_investment_status(
         try:
             next_iso = replace_payment_schedules(investment_id, merged, start)
             patch["nextPayoutDate"] = next_iso
+            replace_partner_commission_schedules(investment_id, merged, start)
         except APIError as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -434,6 +470,7 @@ def admin_patch_investment_status(
         ):
             try:
                 supabase.table(_PS).delete().eq("investmentId", investment_id).execute()
+                delete_partner_commission_schedules(investment_id)
             except APIError as e:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,

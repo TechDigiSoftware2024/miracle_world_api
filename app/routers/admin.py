@@ -1,8 +1,8 @@
 import random
-from typing import List
 from datetime import datetime, timezone
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials
 from postgrest.exceptions import APIError
 from pydantic import ValidationError
@@ -14,7 +14,7 @@ from app.schemas.auth import LoginRequest, TokenResponse
 from app.schemas.admin import AdminResponse
 from app.schemas.user_request import RequestResponse
 from app.schemas.participant import AdminParticipantProfilePatch, ParticipantResponse
-from app.schemas.investment import InvestmentResponse
+from app.schemas.investment import InvestmentResponse, PartnerCommissionScheduleResponse
 from app.schemas.partner import AdminPartnerProfilePatch, PartnerResponse, PartnerTeamMemberNode
 from app.schemas.contact import ContactQueryResponse
 from app.schemas.app_settings import AppSettingsResponse, AppSettingsUpdate
@@ -24,7 +24,10 @@ from app.utils.db_column_names import camel_participant_pk_column, camel_partner
 from app.utils.patch_payload import dump_update_or_400
 from app.utils.supabase_errors import format_api_error
 from app.utils.app_settings_repo import fetch_app_settings_row
-from app.services.partner_portfolio_recalc import recalculate_partner_portfolio
+from app.services.partner_portfolio_recalc import (
+    recalculate_partner_portfolio,
+    recalculate_partner_upline_chain,
+)
 from app.utils.partner_commission import sync_children_introducer_commission_rates
 from app.utils.partner_team import team_tree_for_partner
 from app.utils.participant_fund_types import enrich_participant_row_with_special_fund_ids
@@ -346,6 +349,74 @@ def admin_list_partner_investments(
     return [InvestmentResponse.model_validate(r) for r in (result.data or [])]
 
 
+@router.get(
+    "/partners/{partnerId}/commission-schedules",
+    response_model=List[PartnerCommissionScheduleResponse],
+    summary="Commission schedules where this partner is beneficiary",
+)
+def admin_list_partner_commission_schedules_for_partner(
+    partnerId: str,
+    investment_id: Optional[str] = Query(None, description="Filter by investment id."),
+    from_: Optional[datetime] = Query(
+        None,
+        alias="from",
+        description="Inclusive lower bound on payoutDate (UTC).",
+    ),
+    to: Optional[datetime] = Query(
+        None,
+        description="Inclusive upper bound on payoutDate (UTC).",
+    ),
+    _: dict = Depends(require_role(["admin"])),
+):
+    prid = camel_partner_pk_column()
+    try:
+        exists = (
+            supabase.table("partners")
+            .select(prid)
+            .eq(prid, partnerId)
+            .limit(1)
+            .execute()
+        )
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+    if not exists.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Partner not found",
+        )
+    try:
+        q = (
+            supabase.table("partner_commission_schedules")
+            .select("*")
+            .eq("beneficiaryPartnerId", partnerId)
+        )
+        inv_f = str(investment_id or "").strip()
+        if inv_f:
+            q = q.eq("investmentId", inv_f)
+        if from_ is not None:
+            ts = from_
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            q = q.gte("payoutDate", ts.isoformat())
+        if to is not None:
+            ts = to
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            q = q.lte("payoutDate", ts.isoformat())
+        result = q.order("payoutDate").order("investmentId").order("level").execute()
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+    return [
+        PartnerCommissionScheduleResponse.model_validate(r) for r in (result.data or [])
+    ]
+
+
 @router.get("/schedule-visits", response_model=List[ScheduleVisitResponse])
 def admin_list_schedule_visits(
     current_user: dict = Depends(require_role(["admin"])),
@@ -434,7 +505,19 @@ def admin_delete_partner(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Partner not found",
             )
+        intro_row = (
+            supabase.table("partners")
+            .select("introducer")
+            .eq(prid, partnerId)
+            .limit(1)
+            .execute()
+        )
+        uplink = ""
+        if intro_row.data:
+            uplink = str(intro_row.data[0].get("introducer") or "").strip()
         supabase.table("partners").delete().eq(prid, partnerId).execute()
+        if uplink:
+            recalculate_partner_upline_chain(uplink)
         return {"message": "Partner deleted", "partnerId": partnerId}
     except HTTPException:
         raise
@@ -707,8 +790,6 @@ def approve_request(
                 k["a_status"]: "active",
                 k["a_commission"]: 0.0,
                 k["a_self_commission"]: 0.0,
-                k["a_self_profit"]: 0.0,
-                k["a_gen_profit"]: 0.0,
                 k["a_deals"]: 0,
                 k["a_team"]: 0,
             }).execute()
@@ -731,6 +812,7 @@ def approve_request(
                     }).eq(k["a_partner"], cid).execute()
             except APIError:
                 pass
+            recalculate_partner_upline_chain(cid)
 
         else:
             raise HTTPException(

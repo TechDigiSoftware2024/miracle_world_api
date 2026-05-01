@@ -42,8 +42,6 @@ CREATE TABLE IF NOT EXISTS partners (
     status TEXT NOT NULL DEFAULT 'active',
     "introducerCommission" DOUBLE PRECISION NOT NULL DEFAULT 0,
     "selfCommission" DOUBLE PRECISION NOT NULL DEFAULT 0,
-    "selfProfit" DOUBLE PRECISION NOT NULL DEFAULT 0,
-    "generatedProfitByTeam" DOUBLE PRECISION NOT NULL DEFAULT 0,
     "totalDeals" INT NOT NULL DEFAULT 0,
     "totalTeamMembers" INT NOT NULL DEFAULT 0,
     "portfolioAmount" DOUBLE PRECISION NOT NULL DEFAULT 0,

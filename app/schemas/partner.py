@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, computed_field, model_validator
 
 
 class PartnerResponse(BaseModel):
@@ -24,10 +24,14 @@ class PartnerResponse(BaseModel):
         description="Introducer commission rate on downline principal (percentage points, e.g. 5 means 5%).",
     )
     selfCommission: float = 0
-    selfProfit: float = 0
-    generatedProfitByTeam: float = 0
-    totalDeals: int = 0
-    totalTeamMembers: int = 0
+    totalDeals: int = Field(
+        default=0,
+        description="Count of investments with agentId=this partner and status Active, Matured, or Completed.",
+    )
+    totalTeamMembers: int = Field(
+        default=0,
+        description="Total downline partners (all depths) where introducer chain leads to this partner.",
+    )
     createdAt: datetime
     portfolioAmount: float = Field(
         default=0,
@@ -40,7 +44,10 @@ class PartnerResponse(BaseModel):
     )
     perMonthPendingAmount: float = Field(
         default=0,
-        description="Sum of pending/due schedule lines on downline investments with payoutDate in the current UTC month.",
+        description=(
+            "Sum of pending/due partner_commission_schedules for this partner as beneficiary "
+            "with payoutDate in the current UTC calendar month."
+        ),
     )
     participantInvestedTotal: float = Field(
         default=0,
@@ -52,13 +59,40 @@ class PartnerResponse(BaseModel):
     )
     selfEarningAmount: float = Field(
         default=0,
-        description="Paid partner payouts with levelDepth null or ≤1 (direct / self).",
+        description=(
+            "Sum of partner_commission_schedules.amount for this partner as beneficiary with level 0 "
+            "(direct agent share), statuses pending/due/paid — populated when linked investments are Active."
+        ),
     )
     teamEarningAmount: float = Field(
         default=0,
-        description="Paid partner payouts with levelDepth ≥2 (team / downline).",
+        description=(
+            "Sum of partner_commission_schedules.amount for this partner with level ≥ 1 (introducer/upline share), "
+            "statuses pending/due/paid."
+        ),
     )
     portfolioUpdatedAt: Optional[datetime] = None
+    upcomingNetNextMonthPayment: float = Field(
+        default=0.0,
+        description=(
+            "Sum of pending/due partner_commission_schedules for this partner as beneficiary "
+            "with payoutDate in the next UTC calendar month; recalculated with portfolio fields."
+        ),
+    )
+
+    @computed_field
+    @property
+    def selfProfit(self) -> float:
+        """API alias for ``selfEarningAmount`` (not stored on ``partners``)."""
+
+        return self.selfEarningAmount
+
+    @computed_field
+    @property
+    def generatedProfitByTeam(self) -> float:
+        """API alias for ``teamEarningAmount`` (not stored on ``partners``)."""
+
+        return self.teamEarningAmount
 
     @model_validator(mode="before")
     @classmethod
@@ -77,9 +111,8 @@ class PartnerResponse(BaseModel):
             ("introducerCommissionAmount", 0),
             ("selfEarningAmount", 0),
             ("teamEarningAmount", 0),
+            ("upcomingNetNextMonthPayment", 0),
             ("selfCommission", 0),
-            ("selfProfit", 0),
-            ("generatedProfitByTeam", 0),
             ("totalDeals", 0),
             ("totalTeamMembers", 0),
         ):
@@ -105,8 +138,6 @@ class PartnerUpdate(BaseModel):
         validation_alias=AliasChoices("introducerCommission", "commission"),
     )
     selfCommission: Optional[float] = None
-    selfProfit: Optional[float] = None
-    generatedProfitByTeam: Optional[float] = None
     totalDeals: Optional[int] = None
     totalTeamMembers: Optional[int] = None
 

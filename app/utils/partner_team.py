@@ -90,3 +90,28 @@ def team_tree_for_partner(partner_id: str) -> Optional[PartnerTeamMemberNode]:
         return None
     by_intro = partners_by_introducer(rows, pk_col)
     return build_subtree(root_row, by_intro, pk_col, set())
+
+
+def count_downline_partners(partner_id: str) -> int:
+    """
+    Number of partners in the subtree under ``partner_id`` (direct + indirect children only;
+    does not include ``partner_id``). Cycle-safe BFS over ``introducer`` edges.
+    """
+    pid = str(partner_id or "").strip()
+    if not pid:
+        return 0
+    pk_col = camel_partner_pk_column()
+    rows = fetch_all_partner_rows()
+    by_intro = partners_by_introducer(rows, pk_col)
+    count = 0
+    stack = list(by_intro.get(pid, []))
+    seen: set[str] = set()
+    while stack:
+        row = stack.pop()
+        cid = _partner_pk(row, pk_col)
+        if not cid or cid in seen:
+            continue
+        seen.add(cid)
+        count += 1
+        stack.extend(by_intro.get(cid, []))
+    return count

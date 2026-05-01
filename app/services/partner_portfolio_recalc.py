@@ -11,6 +11,8 @@ from postgrest.exceptions import APIError
 
 from app.db.database import supabase
 from app.utils.db_column_names import camel_partner_pk_column
+from app.utils.partner_team import count_downline_partners
+from app.utils.portfolio_calendar import next_month_bounds_utc
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +24,9 @@ _PAYOUTS = "payouts"
 _PRINCIPAL_STATUSES = frozenset(
     ("Active", "Matured", "Completed", "Pending Approval"),
 )
+
+# Deals counted for totalDeals (activated / closed pipeline only)
+_DEAL_COUNT_STATUSES = frozenset(("Active", "Matured", "Completed"))
 
 
 def _f(x: Any) -> float:
@@ -38,6 +43,34 @@ def _month_bounds_utc(now: Optional[datetime] = None) -> tuple[str, str]:
     last_d = calendar.monthrange(y, m)[1]
     end = datetime(y, m, last_d, 23, 59, 59, tzinfo=timezone.utc)
     return (start.isoformat(), end.isoformat())
+
+
+def recalculate_partner_upline_chain(partner_id: str) -> None:
+    """
+    Recalculate portfolio for ``partner_id`` and every ancestor reachable via ``introducer``.
+    Use after team topology changes (e.g. new partner signup) so ``totalTeamMembers`` stays correct up the tree.
+    """
+    pid = str(partner_id or "").strip()
+    if not pid:
+        return
+    pk_col = camel_partner_pk_column()
+    seen: set[str] = set()
+    while pid and pid not in seen:
+        seen.add(pid)
+        recalculate_partner_portfolio(pid)
+        try:
+            pr = (
+                supabase.table("partners")
+                .select("introducer")
+                .eq(pk_col, pid)
+                .limit(1)
+                .execute()
+            )
+        except APIError:
+            break
+        if not pr.data:
+            break
+        pid = str(pr.data[0].get("introducer") or "").strip()
 
 
 def recalculate_partner_portfolio(partner_id: str) -> None:
@@ -77,7 +110,6 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
             inv_ids_principal.append(iid)
 
     schedule_pending_total = 0.0
-    per_month_pending = 0.0
     if inv_ids_principal:
         try:
             ps_res = supabase.table(_PS).select("*").in_("investmentId", inv_ids_principal).execute()
@@ -93,20 +125,24 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
             st = str(line.get("status") or "").strip()
             if st in ("pending", "due"):
                 schedule_pending_total += amt
-                pdate = str(line.get("payoutDate") or "")
-                if pdate and month_lo <= pdate <= month_hi:
-                    per_month_pending += amt
 
     portfolio_amount = participant_invested + schedule_pending_total
 
+    # Deals = investments linked as agent that are Active or have completed/matured (not Processing / Pending Approval).
+    total_deals = sum(
+        1
+        for r in invs
+        if str(r.get("status") or "").strip() in _DEAL_COUNT_STATUSES
+    )
+
+    total_team_members = count_downline_partners(pid)
+
     paid_total = 0.0
     pending_total = 0.0
-    self_earn = 0.0
-    team_earn = 0.0
     try:
         po_res = (
             supabase.table(_PAYOUTS)
-            .select("amount,status,levelDepth")
+            .select("amount,status")
             .eq("userId", pid)
             .eq("recipientType", "partner")
             .execute()
@@ -116,15 +152,48 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
             st = str(p.get("status") or "").strip()
             if st == "paid":
                 paid_total += a
-                depth = p.get("levelDepth")
-                if depth is None or int(depth or 0) <= 1:
-                    self_earn += a
-                elif int(depth) >= 2:
-                    team_earn += a
             elif st in ("pending", "processing"):
                 pending_total += a
     except APIError as e:
         logger.warning("recalculate_partner_portfolio: payouts query failed for %s: %s", pid, e)
+
+    # Commission accruals (generated when investments go Active): level 0 = direct deal share; >=1 = upline/team.
+    # perMonthPendingAmount uses pending/due rows in the current UTC month from the same table.
+    self_earn = 0.0
+    team_earn = 0.0
+    per_month_pending = 0.0
+    nm_lo, nm_hi = next_month_bounds_utc()
+    upcoming_next_month = 0.0
+    lo_iso, hi_iso = nm_lo.isoformat(), nm_hi.isoformat()
+    try:
+        ce_res = (
+            supabase.table("partner_commission_schedules")
+            .select("amount,status,level,payoutDate")
+            .eq("beneficiaryPartnerId", pid)
+            .execute()
+        )
+        for row in ce_res.data or []:
+            st = str(row.get("status") or "").strip()
+            if st not in ("pending", "due", "paid"):
+                continue
+            a = _f(row.get("amount"))
+            lv = int(row.get("level") or 0)
+            if lv <= 0:
+                self_earn += a
+            else:
+                team_earn += a
+            if st in ("pending", "due"):
+                pds = str(row.get("payoutDate") or "")
+                if pds and month_lo <= pds <= month_hi:
+                    per_month_pending += a
+                if pds and lo_iso <= pds <= hi_iso:
+                    upcoming_next_month += a
+    except APIError as e:
+        logger.warning(
+            "recalculate_partner_portfolio: commission schedules query failed for %s: %s",
+            pid,
+            e,
+        )
 
     rate_pct = 0.0
     try:
@@ -148,6 +217,9 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
         "introducerCommissionAmount": introducer_amt,
         "selfEarningAmount": round(self_earn, 2),
         "teamEarningAmount": round(team_earn, 2),
+        "totalDeals": int(total_deals),
+        "totalTeamMembers": int(total_team_members),
+        "upcomingNetNextMonthPayment": round(upcoming_next_month, 2),
         "portfolioUpdatedAt": now,
     }
 

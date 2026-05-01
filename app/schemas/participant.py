@@ -26,6 +26,13 @@ class ParticipantResponse(BaseModel):
     payoutsPaidAmount: float = 0.0
     totalPortfolioValue: float = 0.0
     portfolioUpdatedAt: Optional[datetime] = None
+    upcomingNetNextMonthPayment: float = Field(
+        default=0.0,
+        description=(
+            "Sum of pending/due payment_schedules with payoutDate in the next UTC calendar month; "
+            "recalculated with portfolio fields."
+        ),
+    )
     offeredValues: Optional[str] = None
     lastVisit: Optional[datetime] = None
     lastUpdated: Optional[datetime] = None
@@ -52,6 +59,7 @@ class ParticipantResponse(BaseModel):
             ("schedulePaidAmount", 0),
             ("payoutsPaidAmount", 0),
             ("totalPortfolioValue", 0),
+            ("upcomingNetNextMonthPayment", 0),
         ):
             if data.get(k) is None:
                 data[k] = v

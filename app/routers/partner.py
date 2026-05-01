@@ -1,6 +1,7 @@
-from typing import List
+from datetime import datetime, timezone
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials
 from postgrest.exceptions import APIError
 
@@ -8,7 +9,7 @@ from app.db.database import supabase
 from app.dependencies.auth import bearer_scheme, require_role
 from app.core.security import create_token, decode_token
 from app.schemas.auth import LoginRequest, TokenResponse
-from app.schemas.investment import InvestmentResponse
+from app.schemas.investment import InvestmentResponse, PartnerCommissionScheduleResponse
 from app.schemas.partner import (
     PartnerAccountBasicResponse,
     PartnerResponse,
@@ -30,6 +31,7 @@ from app.utils.supabase_errors import format_api_error
 router = APIRouter(prefix="/partner", tags=["Partner"])
 
 _TABLE_INV = "investments"
+_TABLE_PC = "partner_commission_schedules"
 
 
 def _row_to_account_basic(row: dict) -> PartnerAccountBasicResponse:
@@ -219,6 +221,63 @@ def partner_list_investments(
             detail=format_api_error(e),
         ) from e
     return [InvestmentResponse.model_validate(r) for r in (result.data or [])]
+
+
+@router.get(
+    "/commission-schedules",
+    response_model=List[PartnerCommissionScheduleResponse],
+    summary="Monthly commission accrual lines where logged-in partner receives payment",
+)
+def partner_list_commission_schedules(
+    investment_id: Optional[str] = Query(
+        None,
+        description="Filter by investment id.",
+    ),
+    from_: Optional[datetime] = Query(
+        None,
+        alias="from",
+        description="Inclusive lower bound on payoutDate (UTC).",
+    ),
+    to: Optional[datetime] = Query(
+        None,
+        description="Inclusive upper bound on payoutDate (UTC).",
+    ),
+    current_user: dict = Depends(require_role(["partner"])),
+):
+    uid = str(current_user.get("userId", "")).strip()
+    if not uid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Token is missing userId",
+        )
+    try:
+        q = (
+            supabase.table(_TABLE_PC)
+            .select("*")
+            .eq("beneficiaryPartnerId", uid)
+        )
+        inv_f = str(investment_id or "").strip()
+        if inv_f:
+            q = q.eq("investmentId", inv_f)
+        if from_ is not None:
+            ts = from_
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            q = q.gte("payoutDate", ts.isoformat())
+        if to is not None:
+            ts = to
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            q = q.lte("payoutDate", ts.isoformat())
+        result = q.order("payoutDate").order("investmentId").order("level").execute()
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+    return [
+        PartnerCommissionScheduleResponse.model_validate(r) for r in (result.data or [])
+    ]
 
 
 # ─── Downline team tree (children only; no parent nodes) ───────
