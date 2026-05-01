@@ -53,13 +53,6 @@ class PartnerResponse(BaseModel):
             "(commission not yet marked paid)."
         ),
     )
-    perMonthPendingAmount: float = Field(
-        default=0,
-        description=(
-            "Pending/due partner_commission_schedules for this partner as beneficiary with payoutDate in the "
-            "**next** UTC calendar month (expected amount payable next month; same window as upcomingNetNextMonthPayment)."
-        ),
-    )
     participantInvestedTotal: float = Field(
         default=0,
         description="Sum of investedAmount on downline investments (agentId=this partner) in Active, Matured, Completed, or Pending Approval.",
@@ -117,7 +110,6 @@ class PartnerResponse(BaseModel):
             ("portfolioAmount", 0),
             ("paidAmount", 0),
             ("pendingAmount", 0),
-            ("perMonthPendingAmount", 0),
             ("participantInvestedTotal", 0),
             ("introducerCommissionAmount", 0),
             ("selfEarningAmount", 0),

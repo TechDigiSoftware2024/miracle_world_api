@@ -11,7 +11,7 @@ from postgrest.exceptions import APIError
 from app.db.database import supabase
 from app.utils.db_column_names import camel_partner_pk_column
 from app.utils.partner_team import count_downline_partners
-from app.utils.portfolio_calendar import next_month_bounds_utc
+from app.utils.portfolio_calendar import next_month_bounds_utc, parse_timestamptz
 
 logger = logging.getLogger(__name__)
 
@@ -67,8 +67,8 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
 
     ``portfolioAmount`` / ``paidAmount`` / ``selfEarningAmount`` / ``teamEarningAmount`` count only
     **paid** ``partner_commission_schedules`` rows. ``pendingAmount`` sums **pending** + **due** rows.
-    ``perMonthPendingAmount`` matches ``upcomingNetNextMonthPayment``: pending/due rows whose ``payoutDate``
-    falls in the **next** UTC calendar month (expected payout in the upcoming month).
+    ``upcomingNetNextMonthPayment`` sums **pending** and **due** rows whose ``payoutDate`` falls in the
+    **next** UTC calendar month (inclusive bounds, same as participant payment schedules).
     Participant payment schedule PATCH mirrors commission line status per month (see
     ``sync_partner_commission_status_for_month``).
     """
@@ -112,7 +112,6 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
     commission_pending = 0.0
     nm_lo, nm_hi = next_month_bounds_utc()
     upcoming_next_month = 0.0
-    lo_iso, hi_iso = nm_lo.isoformat(), nm_hi.isoformat()
     try:
         ce_res = (
             supabase.table("partner_commission_schedules")
@@ -163,7 +162,6 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
         "portfolioAmount": round(portfolio_amount, 2),
         "paidAmount": round(paid_total, 2),
         "pendingAmount": round(commission_pending, 2),
-        "perMonthPendingAmount": round(upcoming_next_month, 2),
         "participantInvestedTotal": round(participant_invested, 2),
         "introducerCommissionAmount": introducer_amt,
         "selfEarningAmount": round(self_earn_paid, 2),

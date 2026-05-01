@@ -6,6 +6,7 @@ from typing import Any, Optional
 from postgrest.exceptions import APIError
 
 from app.db.database import supabase
+from app.services.participant_portfolio_recalc import recalc_from_investment_id
 from app.utils.db_column_names import camel_partner_pk_column
 from app.utils.investment_schedule import calculate_payment_schedule
 
@@ -142,10 +143,12 @@ def replace_partner_commission_schedules(
 
     schedule_rows, _, _ = calculate_payment_schedule(investment_start, monthly, duration)
     if not schedule_rows or invested <= 0:
+        recalc_from_investment_id(iid)
         return
 
     hops = _commission_hops(agent_id)
     if not hops:
+        recalc_from_investment_id(iid)
         return
 
     now = datetime.now(timezone.utc).isoformat()
@@ -180,5 +183,7 @@ def replace_partner_commission_schedules(
             })
 
     if not db_rows:
+        recalc_from_investment_id(iid)
         return
     supabase.table(_TABLE).insert(db_rows).execute()
+    recalc_from_investment_id(iid)

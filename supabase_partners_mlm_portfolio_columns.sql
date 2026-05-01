@@ -15,7 +15,7 @@ END $$;
 ALTER TABLE partners ADD COLUMN IF NOT EXISTS "portfolioAmount" DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE partners ADD COLUMN IF NOT EXISTS "paidAmount" DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE partners ADD COLUMN IF NOT EXISTS "pendingAmount" DOUBLE PRECISION NOT NULL DEFAULT 0;
-ALTER TABLE partners ADD COLUMN IF NOT EXISTS "perMonthPendingAmount" DOUBLE PRECISION NOT NULL DEFAULT 0;
+-- perMonthPendingAmount removed (redundant with upcomingNetNextMonthPayment); drop via supabase_partners_drop_per_month_pending_amount.sql if present.
 ALTER TABLE partners ADD COLUMN IF NOT EXISTS "participantInvestedTotal" DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE partners ADD COLUMN IF NOT EXISTS "introducerCommissionAmount" DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE partners ADD COLUMN IF NOT EXISTS "selfEarningAmount" DOUBLE PRECISION NOT NULL DEFAULT 0;
