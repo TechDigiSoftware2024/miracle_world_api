@@ -94,7 +94,9 @@ class MarkPaidRequest(BaseModel):
         description=(
             "Optional shared id (e.g. UUID) across several mark-paid calls: partner paid payouts for the same "
             "beneficiary merge into one row (amounts summed, commission line ids appended). "
-            "Also merges when transactionId is set and matches an existing partner paid payout for that user."
+            "Also merges when transactionId is set and matches an existing partner paid payout for that user. "
+            "If omitted, the server may still merge into a very recent partner payout with the same payout date, "
+            "method, and null transactionId (see API docs)."
         ),
     )
 

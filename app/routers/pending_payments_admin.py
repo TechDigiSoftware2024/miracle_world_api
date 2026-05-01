@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -29,6 +29,19 @@ from app.utils.payout_id import new_payout_id
 from app.utils.supabase_errors import format_api_error
 
 router = APIRouter(prefix="/pending-payments", tags=["Admin", "Pending payments"])
+
+# Partner payout rows merge across separate mark-paid / generate-payouts calls when batch key and
+# transactionId are absent: same user, method, payout calendar day (UTC), null transactionId, created
+# within this window, and remarks have no explicit payoutBatchKey= (batch-key rows stay isolated).
+PARTNER_PAYOUT_AUTO_MERGE_SECONDS = 900
+
+
+def _partner_remarks_have_batch_key(remarks: object) -> bool:
+    return "payoutbatchkey=" in str(remarks or "").lower()
+
+
+def _utc_payout_calendar_date(val) -> date:
+    return _dt_for_payout(val).astimezone(timezone.utc).date()
 
 
 def _dt_for_payout(val) -> datetime:
@@ -135,6 +148,47 @@ def _find_consolidated_partner_payout_row(
                 return r.data[0]
     except APIError:
         return None
+    return None
+
+
+def _find_recent_partner_payout_for_auto_merge(
+    uid: str,
+    payout_status: str,
+    *,
+    payment_method: str,
+    payout_date: datetime,
+) -> Optional[dict]:
+    uid = str(uid or "").strip()
+    if not uid:
+        return None
+    st = str(payout_status or "").strip().lower()
+    pm = str(payment_method or "").strip()
+    if not pm:
+        return None
+    target_day = _utc_payout_calendar_date(payout_date)
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=PARTNER_PAYOUT_AUTO_MERGE_SECONDS)
+    try:
+        r = (
+            supabase.table("payouts")
+            .select("*")
+            .eq("userId", uid)
+            .eq("recipientType", "partner")
+            .eq("status", st)
+            .eq("paymentMethod", pm)
+            .is_("transactionId", "null")
+            .gte("createdAt", cutoff.isoformat())
+            .order("createdAt", desc=True)
+            .limit(25)
+            .execute()
+        )
+    except APIError:
+        return None
+    for row in r.data or []:
+        if _partner_remarks_have_batch_key(row.get("remarks")):
+            continue
+        if _utc_payout_calendar_date(row.get("payoutDate")) != target_day:
+            continue
+        return row
     return None
 
 
@@ -292,8 +346,11 @@ def admin_mark_schedules_paid(
     """Mark participant payment_schedules and/or partner_commission_schedules as paid; optional payout audit rows.
 
     Partner ``recordPayouts``: one **paid** ``payouts`` row per **beneficiaryPartnerId** in this request
-    (amounts summed). Optional ``partnerPayoutBatchKey`` (same value on multiple API calls) or a shared
+    (amounts summed).     Optional ``partnerPayoutBatchKey`` (same value on multiple API calls) or a shared
     ``transactionId`` merges additional lines into that partner's existing paid row instead of creating another.
+    If both are omitted, a **recent** paid partner row for the same user merges when it matches payout
+    calendar day (UTC), payment method, null ``transactionId``, and was created within ~15 minutes
+    (and was not created with an explicit batch key in ``remarks``).
     ``remarks`` include ``aggregated commissionScheduleIds=…`` and ``investmentIds=…``.
 
     Participant ``recordPayouts``: **one paid** row per **participantId** in this request with the same pattern.
@@ -421,6 +478,17 @@ def admin_mark_schedules_paid(
                         batch_key=batch_key,
                         transaction_id=txn_for_merge,
                     )
+                    if (
+                        not exist
+                        and batch_key is None
+                        and txn_for_merge is None
+                    ):
+                        exist = _find_recent_partner_payout_for_auto_merge(
+                            uid,
+                            "paid",
+                            payment_method=payload.payment_method,
+                            payout_date=max_pd,
+                        )
                     if exist:
                         _merge_update_partner_payout_row(
                             exist,
@@ -464,7 +532,8 @@ def admin_generate_payout_records_from_schedules(
     """Insert **pending** `payouts` rows from schedule lines (does not mark schedules paid).
 
     One **pending** row per partner beneficiary in this request, or merged across calls using the same
-    **partnerPayoutBatchKey** (same beneficiary in each call).
+    **partnerPayoutBatchKey** (same beneficiary in each call). Without a batch key, recent pending rows
+    for the same user / payout day / method also merge (same rules as mark-paid auto-merge).
     """
     if not payload.participant_schedule_ids and not payload.partner_commission_schedule_ids:
         raise HTTPException(
@@ -616,6 +685,13 @@ def admin_generate_payout_records_from_schedules(
                 batch_key=batch_key,
                 transaction_id=None,
             )
+            if not exist and batch_key is None:
+                exist = _find_recent_partner_payout_for_auto_merge(
+                    uid,
+                    "pending",
+                    payment_method=payload.payment_method,
+                    payout_date=max_pd,
+                )
             if exist:
                 _merge_update_partner_payout_row(
                     exist,
