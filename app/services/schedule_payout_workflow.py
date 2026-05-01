@@ -62,7 +62,11 @@ def mark_payment_schedule_paid(schedule_id: int) -> dict:
 
 def mark_partner_commission_schedules_paid(commission_ids: list[int]) -> list[dict]:
     """
-    Set partner_commission_schedules to paid. Returns rows as they were before update (for payouts).
+    Set partner_commission_schedules to paid for each line that is still pending/due.
+
+    Lines already ``paid`` are skipped (idempotent batch pay). Returns **only** the rows that
+    were updated — pre-update snapshots, suitable for ``recordPayouts`` (no duplicate payouts
+    for already-paid lines).
     """
     ids = sorted({int(x) for x in commission_ids if x is not None})
     if not ids:
@@ -79,24 +83,32 @@ def mark_partner_commission_schedules_paid(commission_ids: list[int]) -> list[di
     rows = list(res.data or [])
     if len(rows) != len(ids):
         raise ValueError("One or more partner commission schedule ids were not found")
+    to_patch: list[dict] = []
     for r in rows:
         st = str(r.get("status") or "").strip().lower()
-        if st not in ("pending", "due"):
+        if st in ("pending", "due"):
+            to_patch.append(r)
+        elif st == "paid":
+            continue
+        else:
             raise ValueError(
-                f"Commission line {r.get('id')} is not pending/due (status={r.get('status')})"
+                f"Commission line {r.get('id')} cannot be marked paid (status={r.get('status')})"
             )
+    if not to_patch:
+        return []
+    to_patch_ids = [int(r["id"]) for r in to_patch]
     now = datetime.now(timezone.utc).isoformat()
     try:
         supabase.table("partner_commission_schedules").update({
             "status": "paid",
             "updatedAt": now,
-        }).in_("id", ids).execute()
+        }).in_("id", to_patch_ids).execute()
     except APIError as e:
         raise ValueError(format_api_error(e)) from e
     seen_inv: set[str] = set()
-    for r in rows:
+    for r in to_patch:
         iid = str(r.get("investmentId") or "").strip()
         if iid and iid not in seen_inv:
             seen_inv.add(iid)
             recalc_from_investment_id(iid)
-    return rows
+    return to_patch
