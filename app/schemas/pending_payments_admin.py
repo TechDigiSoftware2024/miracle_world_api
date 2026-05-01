@@ -88,6 +88,15 @@ class MarkPaidRequest(BaseModel):
     payment_method: Literal["BANK", "IMPS/NEFT", "CASH"] = Field(default="BANK", alias="paymentMethod")
     transaction_id: Optional[str] = Field(default=None, alias="transactionId")
     remarks: str = Field(default="")
+    partner_payout_batch_key: Optional[str] = Field(
+        default=None,
+        alias="partnerPayoutBatchKey",
+        description=(
+            "Optional shared id (e.g. UUID) across several mark-paid calls: partner paid payouts for the same "
+            "beneficiary merge into one row (amounts summed, commission line ids appended). "
+            "Also merges when transactionId is set and matches an existing partner paid payout for that user."
+        ),
+    )
 
 
 class MarkPaidItemResult(BaseModel):
@@ -116,6 +125,12 @@ class GeneratePayoutsRequest(BaseModel):
     )
     payment_method: Literal["BANK", "IMPS/NEFT", "CASH"] = Field(default="BANK", alias="paymentMethod")
     remarks: str = Field(default="")
+    partner_payout_batch_key: Optional[str] = Field(
+        default=None,
+        alias="partnerPayoutBatchKey",
+        description="Same as mark-paid: merge pending partner payouts per beneficiary across calls with this key.",
+    )
+
 
 
 class GeneratePayoutsResponse(BaseModel):

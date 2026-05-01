@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -79,6 +80,106 @@ def _payout_remarks_contain_tag(
     except APIError:
         return False
     return bool(res.data)
+
+
+def _sanitize_batch_key(k: Optional[str]) -> Optional[str]:
+    if k is None:
+        return None
+    s = str(k).strip()
+    if re.fullmatch(r"[a-zA-Z0-9._-]{1,128}", s):
+        return s
+    return None
+
+
+def _find_consolidated_partner_payout_row(
+    uid: str,
+    payout_status: str,
+    *,
+    batch_key: Optional[str],
+    transaction_id: Optional[str],
+) -> Optional[dict]:
+    """Partner row to merge into (same batch key, else same transaction id) for this user and status."""
+    uid = str(uid or "").strip()
+    if not uid:
+        return None
+    st = str(payout_status or "").strip()
+    try:
+        if batch_key:
+            r = (
+                supabase.table("payouts")
+                .select("*")
+                .eq("userId", uid)
+                .eq("recipientType", "partner")
+                .eq("status", st)
+                .ilike("remarks", f"%payoutBatchKey={batch_key}%")
+                .order("createdAt", desc=True)
+                .limit(1)
+                .execute()
+            )
+            if r.data:
+                return r.data[0]
+        tid = (transaction_id or "").strip()
+        if tid:
+            r = (
+                supabase.table("payouts")
+                .select("*")
+                .eq("userId", uid)
+                .eq("recipientType", "partner")
+                .eq("status", st)
+                .eq("transactionId", tid)
+                .order("createdAt", desc=True)
+                .limit(1)
+                .execute()
+            )
+            if r.data:
+                return r.data[0]
+    except APIError:
+        return None
+    return None
+
+
+def _merge_update_partner_payout_row(
+    existing: dict,
+    *,
+    add_amount: float,
+    new_payout_date: datetime,
+    append_remarks: str,
+    payment_method: str,
+    transaction_id: Optional[str],
+    admin_id: str,
+) -> None:
+    """Add amount and extend remarks; max payout date; investmentId cleared on merge."""
+    pid = str(existing.get("payoutId") or "").strip()
+    if not pid:
+        return
+    old_amt = float(existing.get("amount") or 0)
+    new_amt = round(old_amt + float(add_amount), 2)
+    old_pd = _dt_for_payout(existing.get("payoutDate"))
+    max_pd = new_payout_date if new_payout_date > old_pd else old_pd
+    pd = max_pd if max_pd.tzinfo else max_pd.replace(tzinfo=timezone.utc)
+    remarks = f"{str(existing.get('remarks') or '').strip()} {append_remarks}".strip()
+    now = datetime.now(timezone.utc).isoformat()
+    body: dict = {
+        "amount": new_amt,
+        "payoutDate": pd.isoformat(),
+        "remarks": remarks,
+        "investmentId": None,
+        "paymentMethod": payment_method,
+        "levelDepth": None,
+        "updatedAt": now,
+    }
+    tid = (transaction_id or "").strip()
+    if tid:
+        body["transactionId"] = tid
+    if admin_id:
+        body["createdByAdminId"] = str(admin_id).strip()
+    try:
+        supabase.table("payouts").update(body).eq("payoutId", pid).execute()
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
 
 
 def _insert_payout_row(
@@ -190,9 +291,10 @@ def admin_mark_schedules_paid(
 ):
     """Mark participant payment_schedules and/or partner_commission_schedules as paid; optional payout audit rows.
 
-    Partner ``recordPayouts``: after marks, **one paid** ``payouts`` row per **beneficiaryPartnerId** in this
-    request (sum of amounts); ``remarks`` include ``aggregated commissionScheduleIds=…`` and ``investmentIds=…``.
-    Skips if a **paid** row with the same aggregate tag already exists (idempotent retry).
+    Partner ``recordPayouts``: one **paid** ``payouts`` row per **beneficiaryPartnerId** in this request
+    (amounts summed). Optional ``partnerPayoutBatchKey`` (same value on multiple API calls) or a shared
+    ``transactionId`` merges additional lines into that partner's existing paid row instead of creating another.
+    ``remarks`` include ``aggregated commissionScheduleIds=…`` and ``investmentIds=…``.
 
     Participant ``recordPayouts``: **one paid** row per **participantId** in this request with the same pattern.
     """
@@ -202,6 +304,8 @@ def admin_mark_schedules_paid(
             detail="Provide participantScheduleIds and/or partnerCommissionScheduleIds",
         )
     admin_id = str(current_user.get("userId", "") or "").strip()
+    batch_key = _sanitize_batch_key(payload.partner_payout_batch_key)
+    txn_for_merge = (payload.transaction_id or "").strip() or None
     results: List[MarkPaidItemResult] = []
     payouts_recorded = 0
     participant_acc: dict[str, list[tuple[int, dict, str]]] = defaultdict(list)
@@ -309,20 +413,39 @@ def admin_mark_schedules_paid(
                     inv_single = iids[0] if len(iids) == 1 else None
                     rmk = (payload.remarks or "").strip()
                     rmk = f"{rmk} {tag} investmentIds={','.join(iids)}".strip()
-                    _insert_payout_row(
-                        user_id=uid,
-                        recipient_type="partner",
-                        amount=total_amt,
-                        investment_id=inv_single,
-                        payout_date=max_pd,
-                        payout_type="commission",
-                        payout_status="paid",
-                        payment_method=payload.payment_method,
-                        transaction_id=payload.transaction_id,
-                        remarks=rmk,
-                        level_depth=level_depth,
-                        admin_id=admin_id,
+                    if batch_key:
+                        rmk = f"{rmk} payoutBatchKey={batch_key}".strip()
+                    exist = _find_consolidated_partner_payout_row(
+                        uid,
+                        "paid",
+                        batch_key=batch_key,
+                        transaction_id=txn_for_merge,
                     )
+                    if exist:
+                        _merge_update_partner_payout_row(
+                            exist,
+                            add_amount=total_amt,
+                            new_payout_date=max_pd,
+                            append_remarks=rmk,
+                            payment_method=payload.payment_method,
+                            transaction_id=txn_for_merge,
+                            admin_id=admin_id,
+                        )
+                    else:
+                        _insert_payout_row(
+                            user_id=uid,
+                            recipient_type="partner",
+                            amount=total_amt,
+                            investment_id=inv_single,
+                            payout_date=max_pd,
+                            payout_type="commission",
+                            payout_status="paid",
+                            payment_method=payload.payment_method,
+                            transaction_id=payload.transaction_id,
+                            remarks=rmk,
+                            level_depth=level_depth,
+                            admin_id=admin_id,
+                        )
                     payouts_recorded += 1
                     recalculate_partner_portfolio(uid)
         except ValueError as e:
@@ -340,8 +463,8 @@ def admin_generate_payout_records_from_schedules(
 ):
     """Insert **pending** `payouts` rows from schedule lines (does not mark schedules paid).
 
-    One **pending** row per participant or per partner beneficiary when multiple ids belong to the same user
-    in this request (amounts summed). Skips when a **pending** row with the same aggregate tag already exists.
+    One **pending** row per partner beneficiary in this request, or merged across calls using the same
+    **partnerPayoutBatchKey** (same beneficiary in each call).
     """
     if not payload.participant_schedule_ids and not payload.partner_commission_schedule_ids:
         raise HTTPException(
@@ -349,6 +472,7 @@ def admin_generate_payout_records_from_schedules(
             detail="Provide participantScheduleIds and/or partnerCommissionScheduleIds",
         )
     admin_id = str(current_user.get("userId", "") or "").strip()
+    batch_key = _sanitize_batch_key(payload.partner_payout_batch_key)
     created_ids: List[str] = []
 
     ps_ids = sorted({int(x) for x in payload.participant_schedule_ids if x is not None})
@@ -484,21 +608,43 @@ def admin_generate_payout_records_from_schedules(
             inv_single = iids[0] if len(iids) == 1 else None
             rmk = (payload.remarks or "").strip()
             rmk = f"{rmk} {tag} investmentIds={','.join(iids)}".strip()
-            pid = _insert_payout_row(
-                user_id=uid,
-                recipient_type="partner",
-                amount=total_amt,
-                investment_id=inv_single,
-                payout_date=max_pd,
-                payout_type="commission",
-                payout_status="pending",
-                payment_method=payload.payment_method,
+            if batch_key:
+                rmk = f"{rmk} payoutBatchKey={batch_key}".strip()
+            exist = _find_consolidated_partner_payout_row(
+                uid,
+                "pending",
+                batch_key=batch_key,
                 transaction_id=None,
-                remarks=rmk,
-                level_depth=level_depth,
-                admin_id=admin_id,
             )
-            created_ids.append(pid)
+            if exist:
+                _merge_update_partner_payout_row(
+                    exist,
+                    add_amount=total_amt,
+                    new_payout_date=max_pd,
+                    append_remarks=rmk,
+                    payment_method=payload.payment_method,
+                    transaction_id=None,
+                    admin_id=admin_id,
+                )
+                eid = str(exist.get("payoutId") or "").strip()
+                if eid:
+                    created_ids.append(eid)
+            else:
+                pid = _insert_payout_row(
+                    user_id=uid,
+                    recipient_type="partner",
+                    amount=total_amt,
+                    investment_id=inv_single,
+                    payout_date=max_pd,
+                    payout_type="commission",
+                    payout_status="pending",
+                    payment_method=payload.payment_method,
+                    transaction_id=None,
+                    remarks=rmk,
+                    level_depth=level_depth,
+                    admin_id=admin_id,
+                )
+                created_ids.append(pid)
             recalculate_partner_portfolio(uid)
 
     return GeneratePayoutsResponse(payoutsCreated=len(created_ids), payoutIds=created_ids)
