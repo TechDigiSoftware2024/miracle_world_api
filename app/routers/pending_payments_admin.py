@@ -41,6 +41,28 @@ def _dt_for_payout(val) -> datetime:
     return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
 
 
+def _partner_commission_audit_payout_exists(commission_schedule_id: int, user_id: str) -> bool:
+    """True if a partner payout row already references this commission line (idempotency)."""
+    cid = int(commission_schedule_id)
+    uid = str(user_id or "").strip()
+    if not uid:
+        return True
+    needle = f"commissionScheduleId={cid} investmentId"
+    try:
+        res = (
+            supabase.table("payouts")
+            .select("payoutId")
+            .eq("userId", uid)
+            .eq("recipientType", "partner")
+            .ilike("remarks", f"%{needle}%")
+            .limit(1)
+            .execute()
+        )
+    except APIError:
+        return False
+    return bool(res.data)
+
+
 def _insert_payout_row(
     *,
     user_id: str,
@@ -148,7 +170,12 @@ def admin_mark_schedules_paid(
     payload: MarkPaidRequest,
     current_user: dict = Depends(require_role(["admin"])),
 ):
-    """Mark participant payment_schedules and/or partner_commission_schedules as paid; optional payout audit rows."""
+    """Mark participant payment_schedules and/or partner_commission_schedules as paid; optional payout audit rows.
+
+    Partner ``recordPayouts``: creates one **paid** ``payouts`` row per **requested** commission id whose line is
+    **paid** (including lines already paid via participant schedule sync), unless an audit row already exists
+    for that ``commissionScheduleId`` (``remarks`` contains ``commissionScheduleId={id} investmentId``).
+    """
     if not payload.participant_schedule_ids and not payload.partner_commission_schedule_ids:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -209,41 +236,51 @@ def admin_mark_schedules_paid(
     if pids:
         ref = ",".join(str(i) for i in pids)
         try:
-            pre_rows = mark_partner_commission_schedules_paid(pids)
+            mark_partner_commission_schedules_paid(pids)
             results.append(
                 MarkPaidItemResult(ref=ref, kind="partner", ok=True, detail=None)
             )
             if payload.record_payouts:
-                seen_u: set[str] = set()
-                for r in pre_rows:
+                fetched = (
+                    supabase.table("partner_commission_schedules")
+                    .select("*")
+                    .in_("id", pids)
+                    .execute()
+                )
+                seen_recalc: set[str] = set()
+                for r in fetched.data or []:
+                    if str(r.get("status") or "").strip().lower() != "paid":
+                        continue
+                    cid = int(r["id"])
                     uid = str(r.get("beneficiaryPartnerId") or "").strip()
+                    if not uid:
+                        continue
+                    if _partner_commission_audit_payout_exists(cid, uid):
+                        continue
                     ld = int(r.get("level") or 0)
                     level_depth = ld if ld >= 1 else None
                     iid = str(r.get("investmentId") or "").strip()
                     amt = float(r.get("amount") or 0)
                     rmk = payload.remarks or ""
-                    rmk = (
-                        f"{rmk} commissionScheduleId={r.get('id')} investmentId={iid}"
-                    ).strip()
-                    if uid:
-                        _insert_payout_row(
-                            user_id=uid,
-                            recipient_type="partner",
-                            amount=amt,
-                            investment_id=iid or None,
-                            payout_date=_dt_for_payout(r.get("payoutDate")),
-                            payout_type="commission",
-                            payout_status="paid",
-                            payment_method=payload.payment_method,
-                            transaction_id=payload.transaction_id,
-                            remarks=rmk,
-                            level_depth=level_depth,
-                            admin_id=admin_id,
-                        )
-                        payouts_recorded += 1
-                        if uid not in seen_u:
-                            seen_u.add(uid)
-                            recalculate_partner_portfolio(uid)
+                    rmk = f"{rmk} commissionScheduleId={cid} investmentId={iid}".strip()
+                    _insert_payout_row(
+                        user_id=uid,
+                        recipient_type="partner",
+                        amount=amt,
+                        investment_id=iid or None,
+                        payout_date=_dt_for_payout(r.get("payoutDate")),
+                        payout_type="commission",
+                        payout_status="paid",
+                        payment_method=payload.payment_method,
+                        transaction_id=payload.transaction_id,
+                        remarks=rmk,
+                        level_depth=level_depth,
+                        admin_id=admin_id,
+                    )
+                    payouts_recorded += 1
+                    if uid not in seen_recalc:
+                        seen_recalc.add(uid)
+                        recalculate_partner_portfolio(uid)
         except ValueError as e:
             results.append(
                 MarkPaidItemResult(ref=ref, kind="partner", ok=False, detail=str(e))
