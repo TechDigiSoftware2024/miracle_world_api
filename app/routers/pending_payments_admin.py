@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -41,23 +42,40 @@ def _dt_for_payout(val) -> datetime:
     return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
 
 
-def _partner_commission_audit_payout_exists(commission_schedule_id: int, user_id: str) -> bool:
-    """True if a partner payout row already references this commission line (idempotency)."""
-    cid = int(commission_schedule_id)
+def _participant_aggregate_tag(schedule_ids: list[int]) -> str:
+    return "aggregated participantScheduleIds=" + ",".join(
+        str(i) for i in sorted(set(schedule_ids))
+    )
+
+
+def _partner_aggregate_tag(commission_ids: list[int]) -> str:
+    return "aggregated commissionScheduleIds=" + ",".join(
+        str(i) for i in sorted(set(commission_ids))
+    )
+
+
+def _payout_remarks_contain_tag(
+    user_id: str,
+    recipient_type: str,
+    tag: str,
+    *,
+    status: Optional[str] = None,
+) -> bool:
+    """Idempotency: optional status filter (e.g. paid vs pending)."""
     uid = str(user_id or "").strip()
-    if not uid:
-        return True
-    needle = f"commissionScheduleId={cid} investmentId"
+    if not uid or not tag:
+        return False
     try:
-        res = (
+        q = (
             supabase.table("payouts")
             .select("payoutId")
             .eq("userId", uid)
-            .eq("recipientType", "partner")
-            .ilike("remarks", f"%{needle}%")
-            .limit(1)
-            .execute()
+            .eq("recipientType", recipient_type)
+            .ilike("remarks", f"%{tag}%")
         )
+        if status:
+            q = q.eq("status", status)
+        res = q.limit(1).execute()
     except APIError:
         return False
     return bool(res.data)
@@ -172,9 +190,11 @@ def admin_mark_schedules_paid(
 ):
     """Mark participant payment_schedules and/or partner_commission_schedules as paid; optional payout audit rows.
 
-    Partner ``recordPayouts``: creates one **paid** ``payouts`` row per **requested** commission id whose line is
-    **paid** (including lines already paid via participant schedule sync), unless an audit row already exists
-    for that ``commissionScheduleId`` (``remarks`` contains ``commissionScheduleId={id} investmentId``).
+    Partner ``recordPayouts``: after marks, **one paid** ``payouts`` row per **beneficiaryPartnerId** in this
+    request (sum of amounts); ``remarks`` include ``aggregated commissionScheduleIds=…`` and ``investmentIds=…``.
+    Skips if a **paid** row with the same aggregate tag already exists (idempotent retry).
+
+    Participant ``recordPayouts``: **one paid** row per **participantId** in this request with the same pattern.
     """
     if not payload.participant_schedule_ids and not payload.partner_commission_schedule_ids:
         raise HTTPException(
@@ -184,6 +204,7 @@ def admin_mark_schedules_paid(
     admin_id = str(current_user.get("userId", "") or "").strip()
     results: List[MarkPaidItemResult] = []
     payouts_recorded = 0
+    participant_acc: dict[str, list[tuple[int, dict, str]]] = defaultdict(list)
 
     for psid in payload.participant_schedule_ids:
         try:
@@ -204,24 +225,7 @@ def admin_mark_schedules_paid(
                 if inv_r.data:
                     uid = str(inv_r.data[0].get("participantId") or "").strip()
                 if uid:
-                    rmk = payload.remarks or ""
-                    rmk = f"{rmk} scheduleId={psid} investmentId={iid}".strip()
-                    _insert_payout_row(
-                        user_id=uid,
-                        recipient_type="participant",
-                        amount=float(row.get("amount") or 0),
-                        investment_id=iid,
-                        payout_date=_dt_for_payout(row.get("payoutDate")),
-                        payout_type="monthly_income",
-                        payout_status="paid",
-                        payment_method=payload.payment_method,
-                        transaction_id=payload.transaction_id,
-                        remarks=rmk,
-                        level_depth=None,
-                        admin_id=admin_id,
-                    )
-                    payouts_recorded += 1
-                    recalculate_participant_portfolio(uid)
+                    participant_acc[uid].append((int(psid), row, iid))
         except ValueError as e:
             results.append(
                 MarkPaidItemResult(
@@ -231,6 +235,35 @@ def admin_mark_schedules_paid(
                     detail=str(e),
                 )
             )
+
+    if payload.record_payouts:
+        for uid, items in participant_acc.items():
+            sids = [t[0] for t in items]
+            tag = _participant_aggregate_tag(sids)
+            if _payout_remarks_contain_tag(uid, "participant", tag, status="paid"):
+                continue
+            total_amt = sum(float(t[1].get("amount") or 0) for t in items)
+            max_pd = max(_dt_for_payout(t[1].get("payoutDate")) for t in items)
+            iids = sorted({t[2] for t in items if t[2]})
+            inv_single: Optional[str] = iids[0] if len(iids) == 1 else None
+            rmk = (payload.remarks or "").strip()
+            rmk = f"{rmk} {tag} investmentIds={','.join(iids)}".strip()
+            _insert_payout_row(
+                user_id=uid,
+                recipient_type="participant",
+                amount=total_amt,
+                investment_id=inv_single,
+                payout_date=max_pd,
+                payout_type="monthly_income",
+                payout_status="paid",
+                payment_method=payload.payment_method,
+                transaction_id=payload.transaction_id,
+                remarks=rmk,
+                level_depth=None,
+                admin_id=admin_id,
+            )
+            payouts_recorded += 1
+            recalculate_participant_portfolio(uid)
 
     pids = sorted({int(x) for x in payload.partner_commission_schedule_ids if x is not None})
     if pids:
@@ -247,28 +280,41 @@ def admin_mark_schedules_paid(
                     .in_("id", pids)
                     .execute()
                 )
-                seen_recalc: set[str] = set()
+                by_beneficiary: dict[str, list[dict]] = defaultdict(list)
                 for r in fetched.data or []:
                     if str(r.get("status") or "").strip().lower() != "paid":
                         continue
-                    cid = int(r["id"])
                     uid = str(r.get("beneficiaryPartnerId") or "").strip()
-                    if not uid:
+                    if uid:
+                        by_beneficiary[uid].append(r)
+                for uid, paid_rows in by_beneficiary.items():
+                    cids = [int(r["id"]) for r in paid_rows]
+                    tag = _partner_aggregate_tag(cids)
+                    if _payout_remarks_contain_tag(uid, "partner", tag, status="paid"):
                         continue
-                    if _partner_commission_audit_payout_exists(cid, uid):
-                        continue
-                    ld = int(r.get("level") or 0)
-                    level_depth = ld if ld >= 1 else None
-                    iid = str(r.get("investmentId") or "").strip()
-                    amt = float(r.get("amount") or 0)
-                    rmk = payload.remarks or ""
-                    rmk = f"{rmk} commissionScheduleId={cid} investmentId={iid}".strip()
+                    total_amt = sum(float(r.get("amount") or 0) for r in paid_rows)
+                    max_pd = max(_dt_for_payout(r.get("payoutDate")) for r in paid_rows)
+                    levels = {int(r.get("level") or 0) for r in paid_rows}
+                    level_depth: Optional[int] = None
+                    if len(levels) == 1:
+                        ld0 = next(iter(levels))
+                        level_depth = ld0 if ld0 >= 1 else None
+                    iids = sorted(
+                        {
+                            str(r.get("investmentId") or "").strip()
+                            for r in paid_rows
+                            if str(r.get("investmentId") or "").strip()
+                        }
+                    )
+                    inv_single = iids[0] if len(iids) == 1 else None
+                    rmk = (payload.remarks or "").strip()
+                    rmk = f"{rmk} {tag} investmentIds={','.join(iids)}".strip()
                     _insert_payout_row(
                         user_id=uid,
                         recipient_type="partner",
-                        amount=amt,
-                        investment_id=iid or None,
-                        payout_date=_dt_for_payout(r.get("payoutDate")),
+                        amount=total_amt,
+                        investment_id=inv_single,
+                        payout_date=max_pd,
                         payout_type="commission",
                         payout_status="paid",
                         payment_method=payload.payment_method,
@@ -278,9 +324,7 @@ def admin_mark_schedules_paid(
                         admin_id=admin_id,
                     )
                     payouts_recorded += 1
-                    if uid not in seen_recalc:
-                        seen_recalc.add(uid)
-                        recalculate_partner_portfolio(uid)
+                    recalculate_partner_portfolio(uid)
         except ValueError as e:
             results.append(
                 MarkPaidItemResult(ref=ref, kind="partner", ok=False, detail=str(e))
@@ -294,7 +338,11 @@ def admin_generate_payout_records_from_schedules(
     payload: GeneratePayoutsRequest,
     current_user: dict = Depends(require_role(["admin"])),
 ):
-    """Insert **pending** `payouts` rows from schedule lines (does not mark schedules paid)."""
+    """Insert **pending** `payouts` rows from schedule lines (does not mark schedules paid).
+
+    One **pending** row per participant or per partner beneficiary when multiple ids belong to the same user
+    in this request (amounts summed). Skips when a **pending** row with the same aggregate tag already exists.
+    """
     if not payload.participant_schedule_ids and not payload.partner_commission_schedule_ids:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -303,88 +351,154 @@ def admin_generate_payout_records_from_schedules(
     admin_id = str(current_user.get("userId", "") or "").strip()
     created_ids: List[str] = []
 
-    for psid in payload.participant_schedule_ids:
-        sr = supabase.table("payment_schedules").select("*").eq("id", int(psid)).limit(1).execute()
-        if not sr.data:
+    ps_ids = sorted({int(x) for x in payload.participant_schedule_ids if x is not None})
+    if ps_ids:
+        sr_all = (
+            supabase.table("payment_schedules").select("*").in_("id", ps_ids).execute()
+        )
+        found_ids = {int(r["id"]) for r in (sr_all.data or [])}
+        missing = [i for i in ps_ids if i not in found_ids]
+        if missing:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"payment schedule {psid} not found",
+                detail=f"payment schedule(s) not found: {missing}",
             )
-        row = sr.data[0]
-        st = str(row.get("status") or "").strip().lower()
-        if st not in ("pending", "due"):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"schedule {psid} is not pending/due",
-            )
-        iid = str(row.get("investmentId") or "").strip()
-        ir = supabase.table("investments").select("participantId").eq("investmentId", iid).limit(1).execute()
-        if not ir.data:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"investment {iid} not found",
-            )
-        uid = str(ir.data[0].get("participantId") or "").strip()
-        rmk = payload.remarks or ""
-        rmk = f"{rmk} generated from scheduleId={psid}".strip()
-        pid = _insert_payout_row(
-            user_id=uid,
-            recipient_type="participant",
-            amount=float(row.get("amount") or 0),
-            investment_id=iid,
-            payout_date=_dt_for_payout(row.get("payoutDate")),
-            payout_type="monthly_income",
-            payout_status="pending",
-            payment_method=payload.payment_method,
-            transaction_id=None,
-            remarks=rmk,
-            level_depth=None,
-            admin_id=admin_id,
+        inv_ids = sorted(
+            {
+                str(r.get("investmentId") or "").strip()
+                for r in (sr_all.data or [])
+                if str(r.get("investmentId") or "").strip()
+            }
         )
-        created_ids.append(pid)
-        recalculate_participant_portfolio(uid)
+        inv_to_part: dict[str, str] = {}
+        if inv_ids:
+            ir = (
+                supabase.table("investments")
+                .select("investmentId,participantId")
+                .in_("investmentId", inv_ids)
+                .execute()
+            )
+            for r in ir.data or []:
+                inv_to_part[str(r.get("investmentId") or "").strip()] = str(
+                    r.get("participantId") or ""
+                ).strip()
+        by_participant: dict[str, list[dict]] = defaultdict(list)
+        for row in sr_all.data or []:
+            iid = str(row.get("investmentId") or "").strip()
+            pid = inv_to_part.get(iid, "").strip()
+            if not pid:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"investment {iid} has no participantId",
+                )
+            by_participant[pid].append(row)
 
-    for cid in payload.partner_commission_schedule_ids:
-        cr = (
+        for uid, rows in by_participant.items():
+            for row in rows:
+                st = str(row.get("status") or "").strip().lower()
+                if st not in ("pending", "due"):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"schedule {row.get('id')} is not pending/due",
+                    )
+            schedule_ids = [int(r["id"]) for r in rows]
+            tag = _participant_aggregate_tag(schedule_ids)
+            if _payout_remarks_contain_tag(uid, "participant", tag, status="pending"):
+                continue
+            total_amt = sum(float(r.get("amount") or 0) for r in rows)
+            max_pd = max(_dt_for_payout(r.get("payoutDate")) for r in rows)
+            iids = sorted(
+                {
+                    str(r.get("investmentId") or "").strip()
+                    for r in rows
+                    if str(r.get("investmentId") or "").strip()
+                }
+            )
+            inv_single = iids[0] if len(iids) == 1 else None
+            rmk = (payload.remarks or "").strip()
+            rmk = f"{rmk} {tag} investmentIds={','.join(iids)}".strip()
+            pid = _insert_payout_row(
+                user_id=uid,
+                recipient_type="participant",
+                amount=total_amt,
+                investment_id=inv_single,
+                payout_date=max_pd,
+                payout_type="monthly_income",
+                payout_status="pending",
+                payment_method=payload.payment_method,
+                transaction_id=None,
+                remarks=rmk,
+                level_depth=None,
+                admin_id=admin_id,
+            )
+            created_ids.append(pid)
+            recalculate_participant_portfolio(uid)
+
+    pc_ids = sorted({int(x) for x in payload.partner_commission_schedule_ids if x is not None})
+    if pc_ids:
+        cr_all = (
             supabase.table("partner_commission_schedules")
             .select("*")
-            .eq("id", int(cid))
-            .limit(1)
+            .in_("id", pc_ids)
             .execute()
         )
-        if not cr.data:
+        found_c = {int(r["id"]) for r in (cr_all.data or [])}
+        missing_c = [i for i in pc_ids if i not in found_c]
+        if missing_c:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"partner commission schedule {cid} not found",
+                detail=f"partner commission schedule(s) not found: {missing_c}",
             )
-        row = cr.data[0]
-        st = str(row.get("status") or "").strip().lower()
-        if st not in ("pending", "due"):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"commission line {cid} is not pending/due",
+        by_beneficiary: dict[str, list[dict]] = defaultdict(list)
+        for row in cr_all.data or []:
+            uid = str(row.get("beneficiaryPartnerId") or "").strip()
+            if uid:
+                by_beneficiary[uid].append(row)
+
+        for uid, rows in by_beneficiary.items():
+            for row in rows:
+                st = str(row.get("status") or "").strip().lower()
+                if st not in ("pending", "due"):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"commission line {row.get('id')} is not pending/due",
+                    )
+            cids = [int(r["id"]) for r in rows]
+            tag = _partner_aggregate_tag(cids)
+            if _payout_remarks_contain_tag(uid, "partner", tag, status="pending"):
+                continue
+            total_amt = sum(float(r.get("amount") or 0) for r in rows)
+            max_pd = max(_dt_for_payout(r.get("payoutDate")) for r in rows)
+            levels = {int(r.get("level") or 0) for r in rows}
+            level_depth: Optional[int] = None
+            if len(levels) == 1:
+                ld0 = next(iter(levels))
+                level_depth = ld0 if ld0 >= 1 else None
+            iids = sorted(
+                {
+                    str(r.get("investmentId") or "").strip()
+                    for r in rows
+                    if str(r.get("investmentId") or "").strip()
+                }
             )
-        uid = str(row.get("beneficiaryPartnerId") or "").strip()
-        iid = str(row.get("investmentId") or "").strip()
-        ld = int(row.get("level") or 0)
-        level_depth = ld if ld >= 1 else None
-        rmk = payload.remarks or ""
-        rmk = f"{rmk} generated from commissionScheduleId={cid}".strip()
-        pid = _insert_payout_row(
-            user_id=uid,
-            recipient_type="partner",
-            amount=float(row.get("amount") or 0),
-            investment_id=iid or None,
-            payout_date=_dt_for_payout(row.get("payoutDate")),
-            payout_type="commission",
-            payout_status="pending",
-            payment_method=payload.payment_method,
-            transaction_id=None,
-            remarks=rmk,
-            level_depth=level_depth,
-            admin_id=admin_id,
-        )
-        created_ids.append(pid)
-        recalculate_partner_portfolio(uid)
+            inv_single = iids[0] if len(iids) == 1 else None
+            rmk = (payload.remarks or "").strip()
+            rmk = f"{rmk} {tag} investmentIds={','.join(iids)}".strip()
+            pid = _insert_payout_row(
+                user_id=uid,
+                recipient_type="partner",
+                amount=total_amt,
+                investment_id=inv_single,
+                payout_date=max_pd,
+                payout_type="commission",
+                payout_status="pending",
+                payment_method=payload.payment_method,
+                transaction_id=None,
+                remarks=rmk,
+                level_depth=level_depth,
+                admin_id=admin_id,
+            )
+            created_ids.append(pid)
+            recalculate_partner_portfolio(uid)
 
     return GeneratePayoutsResponse(payoutsCreated=len(created_ids), payoutIds=created_ids)

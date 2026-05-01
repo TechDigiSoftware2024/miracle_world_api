@@ -56,8 +56,8 @@ class PartnerResponse(BaseModel):
     perMonthPendingAmount: float = Field(
         default=0,
         description=(
-            "Sum of pending/due partner_commission_schedules for this partner as beneficiary "
-            "with payoutDate in the current UTC calendar month."
+            "Pending/due partner_commission_schedules for this partner as beneficiary with payoutDate in the "
+            "**next** UTC calendar month (expected amount payable next month; same window as upcomingNetNextMonthPayment)."
         ),
     )
     participantInvestedTotal: float = Field(

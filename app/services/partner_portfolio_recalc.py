@@ -2,10 +2,9 @@
 Recompute partner MLM / portfolio summary columns from downline investments and partner commission schedules.
 """
 
-import calendar
 import logging
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 from postgrest.exceptions import APIError
 
@@ -32,15 +31,6 @@ def _f(x: Any) -> float:
         return float(x or 0)
     except (TypeError, ValueError):
         return 0.0
-
-
-def _month_bounds_utc(now: Optional[datetime] = None) -> tuple[str, str]:
-    n = now or datetime.now(timezone.utc)
-    y, m = n.year, n.month
-    start = datetime(y, m, 1, 0, 0, 0, tzinfo=timezone.utc)
-    last_d = calendar.monthrange(y, m)[1]
-    end = datetime(y, m, last_d, 23, 59, 59, tzinfo=timezone.utc)
-    return (start.isoformat(), end.isoformat())
 
 
 def recalculate_partner_upline_chain(partner_id: str) -> None:
@@ -77,6 +67,8 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
 
     ``portfolioAmount`` / ``paidAmount`` / ``selfEarningAmount`` / ``teamEarningAmount`` count only
     **paid** ``partner_commission_schedules`` rows. ``pendingAmount`` sums **pending** + **due** rows.
+    ``perMonthPendingAmount`` matches ``upcomingNetNextMonthPayment``: pending/due rows whose ``payoutDate``
+    falls in the **next** UTC calendar month (expected payout in the upcoming month).
     Participant payment schedule PATCH mirrors commission line status per month (see
     ``sync_partner_commission_status_for_month``).
     """
@@ -85,7 +77,6 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
         return
     pk_col = camel_partner_pk_column()
     now = datetime.now(timezone.utc).isoformat()
-    month_lo, month_hi = _month_bounds_utc()
 
     try:
         inv_res = (
@@ -119,7 +110,6 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
     self_earn_paid = 0.0
     team_earn_paid = 0.0
     commission_pending = 0.0
-    per_month_pending = 0.0
     nm_lo, nm_hi = next_month_bounds_utc()
     upcoming_next_month = 0.0
     lo_iso, hi_iso = nm_lo.isoformat(), nm_hi.isoformat()
@@ -144,8 +134,6 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
             elif st in ("pending", "due"):
                 commission_pending += a
                 pds = str(row.get("payoutDate") or "")
-                if pds and month_lo <= pds <= month_hi:
-                    per_month_pending += a
                 if pds and lo_iso <= pds <= hi_iso:
                     upcoming_next_month += a
     except APIError as e:
@@ -175,7 +163,7 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
         "portfolioAmount": round(portfolio_amount, 2),
         "paidAmount": round(paid_total, 2),
         "pendingAmount": round(commission_pending, 2),
-        "perMonthPendingAmount": round(per_month_pending, 2),
+        "perMonthPendingAmount": round(upcoming_next_month, 2),
         "participantInvestedTotal": round(participant_invested, 2),
         "introducerCommissionAmount": introducer_amt,
         "selfEarningAmount": round(self_earn_paid, 2),
