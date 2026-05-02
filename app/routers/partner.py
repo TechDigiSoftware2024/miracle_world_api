@@ -27,6 +27,8 @@ from app.schemas.reward_program import (
 from app.services.partner_portfolio_recalc import recalculate_partner_portfolio
 from app.services.reward_achievement_compute import compute_progress_for_partner_program
 from app.utils.db_column_names import camel_partner_pk_column
+from app.utils.partner_child_commission import child_commission_fields_or_error
+from app.utils.partner_commission import sync_children_introducer_commission_rates
 from app.utils.partner_team import team_tree_for_partner
 from app.utils.patch_payload import dump_update_or_400
 from app.utils.supabase_errors import format_api_error
@@ -322,6 +324,11 @@ def partner_list_commission_schedules(
     "/team",
     response_model=PartnerTeamMemberNode,
     summary="Downline partner tree rooted at logged-in partner",
+    description=(
+        "Recursive tree of introducer → children. Each node includes "
+        "**selfCommissionLockedByParentApp** when the partner-app one-time child commission save "
+        "was already used for that node (as child)."
+    ),
 )
 def partner_get_team_tree(
     current_user: dict = Depends(require_role(["partner"])),
@@ -344,7 +351,13 @@ def partner_get_team_tree(
 @router.post(
     "/team/{child_partner_id}/commission",
     response_model=PartnerResponse,
-    summary="Parent sets direct child partner selfCommission; child introducerCommission = parent.self − child.self",
+    summary="Parent sets direct child selfCommission (one-time per child via partner app)",
+    description=(
+        "Updates the **direct** child's **selfCommission** and **introducerCommission** "
+        "(introducer = parent.self − child.self). **Only one successful POST per child** from the "
+        "partner app; after that, **409** until an admin uses the admin commission endpoint. "
+        "Run **`supabase_partners_self_commission_locked_by_parent_app.sql`** if the lock column is missing."
+    ),
 )
 def partner_set_child_self_commission(
     child_partner_id: str,
@@ -383,24 +396,32 @@ def partner_set_child_self_commission(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This partner is not your direct child (introducer mismatch)",
         )
+    if bool(child_row.get("selfCommissionLockedByParentApp")):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Commission for this direct partner was already set from the partner app. "
+                "Contact an administrator to change it."
+            ),
+        )
     p_self = float(parent_row.get("selfCommission") or 0)
     new_child_self = float(payload.selfCommission)
-    if new_child_self > p_self + 1e-9:
+    try:
+        patch = child_commission_fields_or_error(p_self, new_child_self)
+    except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Child selfCommission cannot exceed parent's selfCommission ({p_self})",
-        )
-    intro_comm = max(0.0, round(p_self - new_child_self, 4))
+            detail=str(e),
+        ) from e
+    patch["selfCommissionLockedByParentApp"] = True
     try:
-        supabase.table("partners").update({
-            "selfCommission": new_child_self,
-            "introducerCommission": intro_comm,
-        }).eq(pk, child_id).execute()
+        supabase.table("partners").update(patch).eq(pk, child_id).execute()
     except APIError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=format_api_error(e),
         ) from e
+    sync_children_introducer_commission_rates(child_id)
     recalculate_partner_portfolio(child_id)
     refetch = supabase.table("partners").select("*").eq(pk, child_id).limit(1).execute()
     if not refetch.data:

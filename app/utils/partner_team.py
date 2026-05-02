@@ -50,6 +50,9 @@ def _node_from_row(row: dict, pk_col: str, children: list[PartnerTeamMemberNode]
         status=str(row.get("status") or ""),
         selfCommission=float(row.get("selfCommission") or 0),
         introducerCommission=float(ic or 0),
+        selfCommissionLockedByParentApp=bool(
+            row.get("selfCommissionLockedByParentApp", False)
+        ),
         children=children,
     )
 

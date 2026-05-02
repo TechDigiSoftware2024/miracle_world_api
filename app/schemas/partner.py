@@ -24,6 +24,13 @@ class PartnerResponse(BaseModel):
         description="Introducer commission rate on downline principal (percentage points, e.g. 5 means 5%).",
     )
     selfCommission: float = 0
+    selfCommissionLockedByParentApp: bool = Field(
+        default=False,
+        description=(
+            "If True, the direct parent already used the **partner app** once to set this partner's "
+            "self/introducer commission; partner-app POST is blocked (admins are unaffected)."
+        ),
+    )
     totalDeals: int = Field(
         default=0,
         description="Count of investments with agentId=this partner and status Active, Matured, or Completed.",
@@ -130,6 +137,8 @@ class PartnerResponse(BaseModel):
         ):
             if d.get(key) is None:
                 d[key] = default
+        if d.get("selfCommissionLockedByParentApp") is None:
+            d["selfCommissionLockedByParentApp"] = False
         return d
 
 
@@ -228,6 +237,10 @@ class PartnerTeamMemberNode(BaseModel):
     introducerCommission: float = Field(
         default=0,
         validation_alias=AliasChoices("introducerCommission", "commission"),
+    )
+    selfCommissionLockedByParentApp: bool = Field(
+        default=False,
+        description="True if direct parent already finalized commission via partner app (cannot repeat from app).",
     )
     children: list[PartnerTeamMemberNode] = Field(default_factory=list)
 

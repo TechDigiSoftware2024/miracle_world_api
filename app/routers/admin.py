@@ -15,7 +15,12 @@ from app.schemas.admin import AdminResponse
 from app.schemas.user_request import RequestResponse
 from app.schemas.participant import AdminParticipantProfilePatch, ParticipantResponse
 from app.schemas.investment import InvestmentResponse, PartnerCommissionScheduleResponse
-from app.schemas.partner import AdminPartnerProfilePatch, PartnerResponse, PartnerTeamMemberNode
+from app.schemas.partner import (
+    AdminPartnerProfilePatch,
+    PartnerResponse,
+    PartnerTeamMemberNode,
+    SetChildSelfCommissionRequest,
+)
 from app.schemas.contact import ContactQueryResponse
 from app.schemas.app_settings import AppSettingsResponse, AppSettingsUpdate
 from app.schemas.schedule_visit import ScheduleVisitDeleteResponse, ScheduleVisitResponse
@@ -28,6 +33,7 @@ from app.services.partner_portfolio_recalc import (
     recalculate_partner_portfolio,
     recalculate_partner_upline_chain,
 )
+from app.utils.partner_child_commission import child_commission_fields_or_error
 from app.utils.partner_commission import sync_children_introducer_commission_rates
 from app.utils.partner_team import team_tree_for_partner
 from app.utils.participant_fund_types import enrich_participant_row_with_special_fund_ids
@@ -276,7 +282,15 @@ def admin_get_partner(
     return PartnerResponse.model_validate(result.data[0])
 
 
-@router.get("/partners/{partnerId}/team", response_model=PartnerTeamMemberNode)
+@router.get(
+    "/partners/{partnerId}/team",
+    response_model=PartnerTeamMemberNode,
+    summary="Downline partner tree for any partner (admin)",
+    description=(
+        "Same structure as **GET /partner/team** for the logged-in partner: nested **children** "
+        "with **selfCommissionLockedByParentApp** on each node when applicable."
+    ),
+)
 def admin_get_partner_team_tree(
     partnerId: str,
     _: dict = Depends(require_role(["admin"])),
@@ -307,6 +321,80 @@ def admin_get_partner_team_tree(
             detail="Partner not found",
         )
     return tree
+
+
+@router.post(
+    "/partners/{parent_partner_id}/team/{child_partner_id}/commission",
+    response_model=PartnerResponse,
+    summary="Set direct child's selfCommission (admin; unlimited)",
+    description=(
+        "Same rules as **POST /partner/team/{child}/commission** (child must be direct downline; "
+        "child.introducerCommission = parent.self − child.self). Admins may call repeatedly; "
+        "does not change **selfCommissionLockedByParentApp**."
+    ),
+)
+def admin_set_child_self_commission(
+    parent_partner_id: str,
+    child_partner_id: str,
+    payload: SetChildSelfCommissionRequest,
+    _: dict = Depends(require_role(["admin"])),
+):
+    parent_id = str(parent_partner_id or "").strip()
+    child_id = str(child_partner_id or "").strip()
+    if not parent_id or not child_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid partner id",
+        )
+    if parent_id == child_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot set commission for yourself",
+        )
+    pk = camel_partner_pk_column()
+    try:
+        pr = supabase.table("partners").select("*").eq(pk, parent_id).limit(1).execute()
+        cr = supabase.table("partners").select("*").eq(pk, child_id).limit(1).execute()
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+    if not pr.data or not cr.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Parent or child partner not found",
+        )
+    parent_row, child_row = pr.data[0], cr.data[0]
+    if str(child_row.get("introducer") or "").strip() != parent_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Child is not a direct downline of this parent (introducer mismatch)",
+        )
+    p_self = float(parent_row.get("selfCommission") or 0)
+    try:
+        patch = child_commission_fields_or_error(p_self, float(payload.selfCommission))
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
+    try:
+        supabase.table("partners").update(patch).eq(pk, child_id).execute()
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+    sync_children_introducer_commission_rates(child_id)
+    recalculate_partner_portfolio(child_id)
+    refetch = supabase.table("partners").select("*").eq(pk, child_id).limit(1).execute()
+    if not refetch.data:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not read child partner after update",
+        )
+    return PartnerResponse.model_validate(refetch.data[0])
 
 
 @router.get("/partners/{partnerId}/investments", response_model=List[InvestmentResponse])
