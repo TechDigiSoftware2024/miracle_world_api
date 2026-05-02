@@ -87,8 +87,38 @@ def admin_closing_investments_export(
     ),
     partner_name: str = Query(
         "",
-        description="Optional case-insensitive substring on partner name or id",
+        description="Alias for agentSearch (partner name, id, or phone); prefer agentSearch",
         alias="partnerName",
+    ),
+    agent_search: str = Query(
+        "",
+        description="Partner filter: substring on name or id, or phone digits (matches Flutter closing filter)",
+        alias="agentSearch",
+    ),
+    investment_date_from: Optional[str] = Query(
+        None,
+        description="Investment date lower bound YYYY-MM-DD (UTC date of investmentDate)",
+        alias="investmentDateFrom",
+    ),
+    investment_date_to: Optional[str] = Query(
+        None,
+        description="Investment date upper bound YYYY-MM-DD (inclusive)",
+        alias="investmentDateTo",
+    ),
+    fund_type: Optional[str] = Query(
+        None,
+        description="Exact fund name chip (case-insensitive) — same as investments.fundName",
+        alias="fundType",
+    ),
+    location: Optional[str] = Query(
+        None,
+        description="Participant address filter: exact (case-insensitive) or substring, like location chip",
+        alias="location",
+    ),
+    participant_search: str = Query(
+        "",
+        description="Substring on participant name or investment id (app bar search)",
+        alias="participantSearch",
     ),
     _: dict = Depends(require_role(["admin"])),
 ):
@@ -97,6 +127,9 @@ def admin_closing_investments_export(
     (participants, participant summary with TDS, agent commission lines, agent summary with TDS)
     plus full hierarchy, by-investment, and by-partner row sets. Schedule rows match the month via
     ``payoutDate`` (UTC wall calendar).
+
+    **Filters** align with the admin Closing screen: status list, partner search (name / id / phone),
+    investment date range, fund type chip, location (participant address), and participant search.
     """
     statuses = [s.strip() for s in (investment_status or "").split(",") if s.strip()]
     tds_rate = tds_rate_percent / 100.0
@@ -107,6 +140,12 @@ def admin_closing_investments_export(
             investment_statuses=statuses,
             tds_rate=tds_rate,
             partner_name_contains=partner_name.strip() or None,
+            agent_search=agent_search.strip() or None,
+            investment_date_from=investment_date_from,
+            investment_date_to=investment_date_to,
+            fund_type=fund_type.strip() if fund_type and fund_type.strip() else None,
+            location=location.strip() if location and location.strip() else None,
+            participant_search=participant_search.strip() or None,
         )
         return ClosingInvestmentsExportResponse.model_validate(raw)
     except ValueError as e:

@@ -6,13 +6,14 @@ by investment, by partner, monthly 4-sheet pack) including TDS and bank_details.
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Optional
 
 from postgrest.exceptions import APIError
 
 from app.db.database import supabase
 from app.utils.db_column_names import camel_partner_pk_column, camel_participant_pk_column
+from app.utils.phone_normalize import normalize_phone_digits
 
 _BANK = "bank_details"
 _INV = "investments"
@@ -37,6 +38,123 @@ def _coerce_dt(val: Any) -> datetime:
     except ValueError:
         return datetime.now(timezone.utc)
     return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+def _payout_in_utc_month(val: Any, year: int, month: int) -> bool:
+    d = _coerce_dt(val)
+    return d.year == int(year) and d.month == int(month)
+
+
+def _parse_iso_date(s: Optional[str]) -> Optional[date]:
+    """Return date from YYYY-MM-DD or None."""
+    if not s or not str(s).strip():
+        return None
+    parts = str(s).strip()[:10].split("-")
+    if len(parts) != 3:
+        return None
+    try:
+        y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
+        return datetime(y, m, d, tzinfo=timezone.utc).date()
+    except ValueError:
+        return None
+
+
+def _partner_id_matches_agent_query(aid: str, par_by_id: dict, agent_query: str) -> bool:
+    qraw = (agent_query or "").strip()
+    if not qraw:
+        return True
+    q = qraw.lower()
+    q_digits = normalize_phone_digits(qraw) if any(c.isdigit() for c in qraw) else ""
+    rec = par_by_id.get(aid) or {}
+    nm = str(rec.get("name") or "").lower()
+    pid = aid.lower()
+    ph = normalize_phone_digits(str(rec.get("phone") or ""))
+    if q in nm or q in pid:
+        return True
+    if len(q_digits) >= 10 and ph == q_digits:
+        return True
+    if len(q_digits) >= 4 and q_digits in ph and len(ph) >= 10:
+        return True
+    return False
+
+
+def _investment_matches_agent_query(
+    inv: dict,
+    pc_lines: list[dict],
+    par_by_id: dict,
+    agent_query: str,
+) -> bool:
+    qraw = (agent_query or "").strip()
+    if not qraw:
+        return True
+    cand_ids: set[str] = set()
+    ag = str(inv.get("agentId") or "").strip()
+    if ag:
+        cand_ids.add(ag)
+    for row in pc_lines:
+        bid = str(row.get("beneficiaryPartnerId") or "").strip()
+        if bid:
+            cand_ids.add(bid)
+    for aid in cand_ids:
+        if _partner_id_matches_agent_query(aid, par_by_id, qraw):
+            return True
+    return False
+
+
+def _apply_closing_investment_filters(
+    investments: list[dict],
+    *,
+    pc_by_inv: dict[str, list[dict]],
+    part_by_id: dict,
+    par_by_id: dict,
+    investment_date_from: Optional[str] = None,
+    investment_date_to: Optional[str] = None,
+    fund_type: Optional[str] = None,
+    location: Optional[str] = None,
+    participant_search: Optional[str] = None,
+    agent_query: Optional[str] = None,
+) -> list[dict]:
+    d_from = _parse_iso_date(investment_date_from)
+    d_to = _parse_iso_date(investment_date_to)
+    ft = (fund_type or "").strip().lower()
+    loc = (location or "").strip().lower()
+    part_q = (participant_search or "").strip().lower()
+    aq = (agent_query or "").strip()
+
+    out: list[dict] = []
+    for inv in investments:
+        iid = str(inv.get("investmentId") or "").strip()
+        pid = str(inv.get("participantId") or "").strip()
+        if not iid or not pid:
+            continue
+
+        if d_from or d_to:
+            idt = _coerce_dt(inv.get("investmentDate")).date()
+            if d_from and idt < d_from:
+                continue
+            if d_to and idt > d_to:
+                continue
+
+        if ft:
+            fn = str(inv.get("fundName") or "").strip().lower()
+            if fn != ft:
+                continue
+
+        if loc:
+            addr = str((part_by_id.get(pid) or {}).get("address") or "").strip().lower()
+            if loc != addr and loc not in addr:
+                continue
+
+        if part_q:
+            name = str((part_by_id.get(pid) or {}).get("name") or "").lower()
+            if part_q not in name and part_q not in iid.lower():
+                continue
+
+        if aq and not _investment_matches_agent_query(inv, pc_by_inv.get(iid, []), par_by_id, aq):
+            continue
+
+        out.append(inv)
+    return out
 
 
 def _is_assured(inv: dict) -> bool:
@@ -149,17 +267,30 @@ def build_closing_investments_export(
     investment_statuses: Optional[list[str]] = None,
     tds_rate: float = 0.10,
     partner_name_contains: Optional[str] = None,
+    agent_search: Optional[str] = None,
+    investment_date_from: Optional[str] = None,
+    investment_date_to: Optional[str] = None,
+    fund_type: Optional[str] = None,
+    location: Optional[str] = None,
+    participant_search: Optional[str] = None,
 ) -> dict[str, Any]:
     """Build all export row lists for ``year``/``month`` (UTC calendar month)."""
     if not (1 <= int(month) <= 12):
         raise ValueError("month must be 1–12")
     y, mo = int(year), int(month)
 
+    for label, s in (
+        ("investmentDateFrom", investment_date_from),
+        ("investmentDateTo", investment_date_to),
+    ):
+        if s and str(s).strip() and _parse_iso_date(s) is None:
+            raise ValueError(f"{label} must be YYYY-MM-DD")
+
     statuses = investment_statuses or ["Active"]
     if not statuses:
         statuses = ["Active"]
 
-    pn = (partner_name_contains or "").strip().lower()
+    agent_query = (agent_search or partner_name_contains or "").strip()
 
     try:
         inv_res = supabase.table(_INV).select("*").in_("status", statuses).execute()
@@ -238,31 +369,21 @@ def build_closing_investments_export(
         except APIError:
             pass
 
-    if pn:
-        filtered_invs: list[dict] = []
-        for inv in investments:
-            iid = str(inv.get("investmentId") or "").strip()
-            cand_ids: set[str] = set()
-            ag = str(inv.get("agentId") or "").strip()
-            if ag:
-                cand_ids.add(ag)
-            for row in pc_by_inv.get(iid, []):
-                bid = str(row.get("beneficiaryPartnerId") or "").strip()
-                if bid:
-                    cand_ids.add(bid)
-            match = False
-            for aid in cand_ids:
-                rec = par_by_id.get(aid) or {}
-                nm = str(rec.get("name") or "").lower()
-                if pn in nm or pn in aid.lower():
-                    match = True
-                    break
-            if match:
-                filtered_invs.append(inv)
-        investments = filtered_invs
-        inv_ids = [str(r.get("investmentId") or "").strip() for r in investments if r.get("investmentId")]
-        if not investments:
-            return _empty_export_payload(y, mo, statuses, tds_rate)
+    investments = _apply_closing_investment_filters(
+        investments,
+        pc_by_inv=pc_by_inv,
+        part_by_id=part_by_id,
+        par_by_id=par_by_id,
+        investment_date_from=investment_date_from,
+        investment_date_to=investment_date_to,
+        fund_type=fund_type,
+        location=location,
+        participant_search=participant_search,
+        agent_query=agent_query or None,
+    )
+    inv_ids = [str(r.get("investmentId") or "").strip() for r in investments if r.get("investmentId")]
+    if not investments:
+        return _empty_export_payload(y, mo, statuses, tds_rate)
 
     def inv_core(inv: dict, pid: str) -> dict[str, Any]:
         assured = _is_assured(inv)
@@ -374,9 +495,7 @@ def build_closing_investments_export(
         else:
             for bid in ordered_bids:
                 agg = _node_aggregates(nodes[bid])
-                pn_rec = par_by_id.get(bid) or {}
-                nm = str(pn_rec.get("name") or "").lower()
-                if pn and pn not in nm and pn not in bid.lower():
+                if agent_query and not _partner_id_matches_agent_query(bid, par_by_id, agent_query):
                     continue
                 full_hierarchy.append({
                     **core,
@@ -425,9 +544,7 @@ def build_closing_investments_export(
             })
         else:
             for bid in ordered_bids:
-                pn_rec = par_by_id.get(bid) or {}
-                nm = str(pn_rec.get("name") or "").lower()
-                if pn and pn not in nm and pn not in bid.lower():
+                if agent_query and not _partner_id_matches_agent_query(bid, par_by_id, agent_query):
                     continue
                 lines_b = nodes[bid]
                 agg = _node_aggregates(lines_b)
