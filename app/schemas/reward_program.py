@@ -121,5 +121,56 @@ class RewardOfferResponse(BaseModel):
     )
 
 
+class RewardProgramProgress(BaseModel):
+    """One evaluated window: paid direct (L0) / team (L1+) vs program goal."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    periodKey: str
+    periodStart: datetime
+    periodEnd: datetime
+    directPaidInPeriod: float
+    teamPaidInPeriod: float
+    qualifyingAmount: float
+    goalAmountRupees: float
+    goalReached: bool
+    achievedAt: Optional[datetime] = None
+
+
 class RewardProgramWithOffersResponse(RewardProgramResponse):
     offers: list[RewardOfferResponse] = Field(default_factory=list)
+    progress: list[RewardProgramProgress] = Field(
+        default_factory=list,
+        description="Partner: paid commission vs goal per period (ULTIMATE: one FULL row; MONTHLY: one row per calendar month).",
+    )
+    hasEligibleReward: bool = Field(
+        default=False,
+        description="Partner: True if goalReached on any progress slice for this program.",
+    )
+
+
+class RewardAchievementAdminRow(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    id: int
+    programId: int
+    partnerId: str
+    periodKey: str
+    periodStart: datetime
+    periodEnd: datetime
+    directPaidInPeriod: float
+    teamPaidInPeriod: float
+    qualifyingAmount: float
+    goalAmountRupees: float
+    goalReached: bool
+    achievedAt: Optional[datetime] = None
+    computedAt: Optional[datetime] = None
+    partnerName: str = ""
+    partnerPhone: str = ""
+    programTitle: str = ""
+    programType: str = ""
+
+
+class RewardAchievementRecomputeResponse(BaseModel):
+    programId: int
+    rowsWritten: int

@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import logging
 from datetime import datetime, timezone
 from typing import List
 
@@ -14,8 +17,11 @@ from app.schemas.reward_program import (
 from app.utils.patch_payload import dump_update_or_400
 from app.utils.reward_program_dates import compute_end_date
 from app.utils.supabase_errors import format_api_error
+from app.services.reward_achievement_compute import recompute_program_achievements
 
 router = APIRouter(prefix="/reward-programs", tags=["Admin", "Reward programs"])
+
+logger = logging.getLogger(__name__)
 
 _TABLE = "reward_programs"
 
@@ -104,6 +110,10 @@ def admin_create_reward_program(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not read reward program after insert.",
         )
+    try:
+        recompute_program_achievements(int(row["id"]))
+    except Exception as e:
+        logger.warning("reward achievements recompute after create failed: %s", e)
     return RewardProgramResponse.model_validate(row)
 
 
@@ -154,6 +164,10 @@ def admin_patch_reward_program(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Could not read reward program after update.",
             )
+        try:
+            recompute_program_achievements(program_id)
+        except Exception as e:
+            logger.warning("reward achievements recompute after patch failed: %s", e)
         return RewardProgramResponse.model_validate(row)
     except HTTPException:
         raise

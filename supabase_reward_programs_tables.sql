@@ -36,3 +36,29 @@ CREATE TABLE IF NOT EXISTS reward_offers (
 );
 
 CREATE INDEX IF NOT EXISTS idx_reward_offers_program ON reward_offers ("programId");
+
+-- Achievements: see also supabase_reward_program_achievements.sql (same DDL).
+CREATE TABLE IF NOT EXISTS reward_program_achievements (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    "programId" BIGINT NOT NULL REFERENCES reward_programs (id) ON DELETE CASCADE,
+    "partnerId" TEXT NOT NULL,
+    "periodKey" TEXT NOT NULL,
+    "periodStart" TIMESTAMPTZ NOT NULL,
+    "periodEnd" TIMESTAMPTZ NOT NULL,
+    "directPaidInPeriod" NUMERIC(14, 2) NOT NULL DEFAULT 0,
+    "teamPaidInPeriod" NUMERIC(14, 2) NOT NULL DEFAULT 0,
+    "qualifyingAmount" NUMERIC(14, 2) NOT NULL DEFAULT 0,
+    "goalAmountRupees" NUMERIC(14, 2) NOT NULL DEFAULT 0,
+    "goalReached" BOOLEAN NOT NULL DEFAULT false,
+    "achievedAt" TIMESTAMPTZ,
+    "computedAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT reward_achievements_period_key_chk CHECK (
+        "periodKey" = 'FULL' OR "periodKey" ~ '^[0-9]{4}-[0-9]{2}$'
+    ),
+    CONSTRAINT reward_program_achievements_unique_slice UNIQUE ("programId", "partnerId", "periodKey")
+);
+
+CREATE INDEX IF NOT EXISTS idx_reward_achievements_program ON reward_program_achievements ("programId");
+CREATE INDEX IF NOT EXISTS idx_reward_achievements_partner ON reward_program_achievements ("partnerId");
+CREATE INDEX IF NOT EXISTS idx_reward_achievements_reached ON reward_program_achievements ("programId", "goalReached")
+    WHERE "goalReached" = true;

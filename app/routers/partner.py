@@ -19,10 +19,12 @@ from app.schemas.partner import (
 )
 from app.schemas.reward_program import (
     RewardOfferResponse,
+    RewardProgramProgress,
     RewardProgramResponse,
     RewardProgramWithOffersResponse,
 )
 from app.services.partner_portfolio_recalc import recalculate_partner_portfolio
+from app.services.reward_achievement_compute import compute_progress_for_partner_program
 from app.utils.db_column_names import camel_partner_pk_column
 from app.utils.partner_team import team_tree_for_partner
 from app.utils.patch_payload import dump_update_or_400
@@ -385,9 +387,15 @@ def partner_set_child_self_commission(
     summary="List active reward programs with offers",
 )
 def partner_list_active_reward_programs(
-    _: dict = Depends(require_role(["partner"])),
+    current_user: dict = Depends(require_role(["partner"])),
 ):
     """Partner-only. Returns **`isActive` = true** programs, each with its **offers** (newest programs first)."""
+    uid = str(current_user.get("userId", "")).strip()
+    if not uid:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token is missing userId",
+        )
     try:
         prog = (
             supabase.table("reward_programs")
@@ -407,19 +415,24 @@ def partner_list_active_reward_programs(
             .order("createdAt", desc=True)
             .execute()
         )
-        by_pid: dict[int, list] = {}
+        by_prog: dict[int, list] = {}
         for o in off.data or []:
-            pid = int(o.get("programId"))
-            by_pid.setdefault(pid, []).append(o)
+            gid = int(o.get("programId"))
+            by_prog.setdefault(gid, []).append(o)
         out: list[RewardProgramWithOffersResponse] = []
         for r in rows:
-            pid = int(r["id"])
-            offers = [RewardOfferResponse.model_validate(x) for x in by_pid.get(pid, [])]
+            prog_id = int(r["id"])
+            offers = [RewardOfferResponse.model_validate(x) for x in by_prog.get(prog_id, [])]
             base = RewardProgramResponse.model_validate(r)
+            raw_prog = compute_progress_for_partner_program(r, uid)
+            prog_models = [RewardProgramProgress.model_validate(x) for x in raw_prog]
+            has_eligible = any(p.goalReached for p in prog_models)
             out.append(
                 RewardProgramWithOffersResponse.model_validate({
                     **base.model_dump(),
                     "offers": [o.model_dump() for o in offers],
+                    "progress": [p.model_dump() for p in prog_models],
+                    "hasEligibleReward": has_eligible,
                 })
             )
         return out
