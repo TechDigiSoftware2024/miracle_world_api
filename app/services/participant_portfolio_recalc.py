@@ -5,6 +5,11 @@ For investments with isProfitCapitalPerMonth, each schedule line and linked payo
 counts only the profit share of the amount (monthly = M, capital = P/duration,
 profit share = (M - capital)/M of each cash amount) so principal is not double-counted
 in totalPortfolioValue. Non P+C schedule lines and payouts count in full (returns).
+
+Paid ``payouts`` rows that mirror already-counted **payment_schedules** (remarks contain
+``participantScheduleIds=`` from mark-paid + recordPayouts) do not add to portfolio again;
+the accrual is in the paid schedule lines. Standalone payouts (e.g. manual or maturity)
+still count.
 """
 
 import logging
@@ -53,6 +58,12 @@ def _line_profit_for_portfolio(inv: dict, line_amount: float) -> float:
     cap = p / d
     profit_per = max(0.0, m - cap)
     return a * (profit_per / m)
+
+
+def _payout_is_schedule_mirror(remarks: object) -> bool:
+    """True when this payout row duplicates payment_schedules already rolled into portfolio."""
+    s = str(remarks or "").lower()
+    return "participantscheduleids=" in s
 
 
 def _payout_profit_for_portfolio(inv: Optional[dict], amount: float) -> float:
@@ -141,7 +152,7 @@ def recalculate_participant_portfolio(participant_id: str) -> None:
     try:
         po_res = (
             supabase.table(_PAYOUTS)
-            .select("amount,status,investmentId")
+            .select("amount,status,investmentId,remarks")
             .eq("userId", pid)
             .eq("recipientType", "participant")
             .execute()
@@ -151,6 +162,8 @@ def recalculate_participant_portfolio(participant_id: str) -> None:
                 continue
             a = _f(p.get("amount"))
             payouts_paid_gross += a
+            if _payout_is_schedule_mirror(p.get("remarks")):
+                continue
             iid = str(p.get("investmentId") or "").strip()
             if iid and iid in inv_by_id:
                 payouts_profit += _payout_profit_for_portfolio(inv_by_id.get(iid), a)
