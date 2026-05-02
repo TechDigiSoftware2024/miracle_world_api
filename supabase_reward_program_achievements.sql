@@ -27,6 +27,6 @@ CREATE INDEX IF NOT EXISTS idx_reward_achievements_reached ON reward_program_ach
     WHERE "goalReached" = true;
 
 COMMENT ON TABLE reward_program_achievements IS
-    'Earned income vs reward program goals: paid commission in period (direct L0 / team L1+). Recompute when program dates/goals change.';
+    'Eligible business vs reward goals: direct principal (agentId=self) and team principal (downline agents only when level≥1 commission hop exists; investmentDate in period). Column names directPaidInPeriod/teamPaidInPeriod are legacy.';
 COMMENT ON COLUMN reward_program_achievements."periodKey" IS
     'FULL = ULTIMATE cumulative window; YYYY-MM = MONTHLY slice.';

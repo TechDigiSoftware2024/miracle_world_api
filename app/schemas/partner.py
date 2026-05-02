@@ -57,6 +57,13 @@ class PartnerResponse(BaseModel):
         default=0,
         description="Sum of investedAmount on downline investments (agentId=this partner) in Active, Matured, Completed, or Pending Approval.",
     )
+    totalBusiness: float = Field(
+        default=0,
+        description=(
+            "Total group **investedAmount** (same qualifying statuses): deals where agentId is this partner "
+            "or any partner in their downline introducer tree."
+        ),
+    )
     introducerCommissionAmount: float = Field(
         default=0,
         description="participantInvestedTotal × introducerCommission / 100 (recalculated server-side).",
@@ -112,6 +119,7 @@ class PartnerResponse(BaseModel):
             ("paidAmount", 0),
             ("pendingAmount", 0),
             ("participantInvestedTotal", 0),
+            ("totalBusiness", 0),
             ("introducerCommissionAmount", 0),
             ("selfEarningAmount", 0),
             ("teamEarningAmount", 0),
@@ -123,6 +131,15 @@ class PartnerResponse(BaseModel):
             if d.get(key) is None:
                 d[key] = default
         return d
+
+
+class PartnerProfileResponse(PartnerResponse):
+    """
+    Authenticated ``GET /partner/profile``: same fields as :class:`PartnerResponse` but **mpin**
+    is never returned in JSON (still accepted when validating from DB rows).
+    """
+
+    mpin: str = Field(exclude=True)
 
 
 class PartnerUpdate(BaseModel):

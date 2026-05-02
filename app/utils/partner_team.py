@@ -115,3 +115,28 @@ def count_downline_partners(partner_id: str) -> int:
         count += 1
         stack.extend(by_intro.get(cid, []))
     return count
+
+
+def downline_partner_ids_including_self(partner_id: str) -> list[str]:
+    """
+    ``partner_id`` first, then every descendant partner reachable via ``introducer`` (cycle-safe BFS).
+    Used for group business volume (direct + team book).
+    """
+    pid = str(partner_id or "").strip()
+    if not pid:
+        return []
+    pk_col = camel_partner_pk_column()
+    rows = fetch_all_partner_rows()
+    by_intro = partners_by_introducer(rows, pk_col)
+    out: list[str] = [pid]
+    stack = list(by_intro.get(pid, []))
+    seen: set[str] = {pid}
+    while stack:
+        row = stack.pop()
+        cid = _partner_pk(row, pk_col)
+        if not cid or cid in seen:
+            continue
+        seen.add(cid)
+        out.append(cid)
+        stack.extend(by_intro.get(cid, []))
+    return out

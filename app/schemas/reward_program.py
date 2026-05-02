@@ -122,15 +122,26 @@ class RewardOfferResponse(BaseModel):
 
 
 class RewardProgramProgress(BaseModel):
-    """One evaluated window: paid direct (L0) / team (L1+) vs program goal."""
+    """One evaluated window: eligible **business** (invested principal) vs program goal."""
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     periodKey: str
     periodStart: datetime
     periodEnd: datetime
-    directPaidInPeriod: float
-    teamPaidInPeriod: float
+    directPaidInPeriod: float = Field(
+        description=(
+            "Eligible **direct** principal: investedAmount on deals where this partner is agentId, "
+            "with investmentDate in the period (legacy column name)."
+        ),
+    )
+    teamPaidInPeriod: float = Field(
+        description=(
+            "Eligible **team** principal: downline agents' investments only when this partner has a "
+            "level ≥ 1 commission hop from that agent; otherwise that volume stays with the downline partner "
+            "as direct only (legacy column name)."
+        ),
+    )
     qualifyingAmount: float
     goalAmountRupees: float
     goalReached: bool
@@ -141,7 +152,10 @@ class RewardProgramWithOffersResponse(RewardProgramResponse):
     offers: list[RewardOfferResponse] = Field(default_factory=list)
     progress: list[RewardProgramProgress] = Field(
         default_factory=list,
-        description="Partner: paid commission vs goal per period (ULTIMATE: one FULL row; MONTHLY: one row per calendar month).",
+        description=(
+            "Partner: eligible business (principal) vs goal per period "
+            "(ULTIMATE: one FULL row; MONTHLY: one row per calendar month)."
+        ),
     )
     hasEligibleReward: bool = Field(
         default=False,

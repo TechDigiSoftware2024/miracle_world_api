@@ -71,9 +71,9 @@ def _fetch_partner(
     return row
 
 
-def _commission_hops(agent_id: str) -> list[dict[str, Any]]:
+def commission_hops_for_agent(agent_id: str) -> list[dict[str, Any]]:
     """
-    Build beneficiary × snapshotted rate for each month.
+    Build beneficiary × rate for each upline slot on a deal (same rules as stored commission rows).
 
     Level 0: deal agent earns selfCommission % on principal per month.
     Each upline hop: child's introducerCommission % to their introducer (omit if rate ≤ 0).
@@ -146,7 +146,7 @@ def replace_partner_commission_schedules(
         recalc_from_investment_id(iid)
         return
 
-    hops = _commission_hops(agent_id)
+    hops = commission_hops_for_agent(agent_id)
     if not hops:
         recalc_from_investment_id(iid)
         return

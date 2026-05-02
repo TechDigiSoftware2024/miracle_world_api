@@ -10,7 +10,7 @@ from postgrest.exceptions import APIError
 
 from app.db.database import supabase
 from app.utils.db_column_names import camel_partner_pk_column
-from app.utils.partner_team import count_downline_partners
+from app.utils.partner_team import count_downline_partners, downline_partner_ids_including_self
 from app.utils.portfolio_calendar import next_month_bounds_utc, parse_timestamptz
 
 logger = logging.getLogger(__name__)
@@ -25,12 +25,107 @@ _PRINCIPAL_STATUSES = frozenset(
 # Deals counted for totalDeals (activated / closed pipeline only)
 _DEAL_COUNT_STATUSES = frozenset(("Active", "Matured", "Completed"))
 
+# PostgREST often caps responses (~1000 rows); paginate so totals are complete.
+_PAGE = 1000
+
 
 def _f(x: Any) -> float:
     try:
         return float(x or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _fetch_all_commission_lines_for_beneficiary(partner_id: str) -> list[dict]:
+    """All ``partner_commission_schedules`` rows for this beneficiary (paginated)."""
+    pid = str(partner_id or "").strip()
+    out: list[dict] = []
+    off = 0
+    while True:
+        try:
+            res = (
+                supabase.table("partner_commission_schedules")
+                .select("amount,status,level,payoutDate")
+                .eq("beneficiaryPartnerId", pid)
+                .order("id")
+                .range(off, off + _PAGE - 1)
+                .execute()
+            )
+        except APIError as e:
+            logger.warning("commission schedules page %s for %s: %s", off, pid, e)
+            break
+        chunk = list(res.data or [])
+        if not chunk:
+            break
+        out.extend(chunk)
+        if len(chunk) < _PAGE:
+            break
+        off += _PAGE
+    return out
+
+
+def _fetch_all_investments_as_agent(partner_id: str) -> list[dict]:
+    """All investments where this partner is ``agentId`` (paginated)."""
+    pid = str(partner_id or "").strip()
+    out: list[dict] = []
+    off = 0
+    while True:
+        try:
+            res = (
+                supabase.table(_INVEST)
+                .select("*")
+                .eq("agentId", pid)
+                .order("investmentId")
+                .range(off, off + _PAGE - 1)
+                .execute()
+            )
+        except APIError as e:
+            logger.warning("investments page %s for agent %s: %s", off, pid, e)
+            break
+        chunk = list(res.data or [])
+        if not chunk:
+            break
+        out.extend(chunk)
+        if len(chunk) < _PAGE:
+            break
+        off += _PAGE
+    return out
+
+
+def _sum_principal_for_agent_ids(agent_ids: list[str]) -> float:
+    """Sum ``investedAmount`` for investments whose agent is in ``agent_ids`` and status qualifies."""
+    ids = [str(x).strip() for x in agent_ids if str(x).strip()]
+    if not ids:
+        return 0.0
+    total = 0.0
+    chunk_size = 80
+    st_list = list(_PRINCIPAL_STATUSES)
+    for i in range(0, len(ids), chunk_size):
+        batch = ids[i : i + chunk_size]
+        off = 0
+        while True:
+            try:
+                res = (
+                    supabase.table(_INVEST)
+                    .select("investedAmount")
+                    .in_("agentId", batch)
+                    .in_("status", st_list)
+                    .order("investmentId")
+                    .range(off, off + _PAGE - 1)
+                    .execute()
+                )
+            except APIError as e:
+                logger.warning("totalBusiness batch page %s: %s", off, e)
+                break
+            chunk = list(res.data or [])
+            if not chunk:
+                break
+            for r in chunk:
+                total += _f(r.get("investedAmount"))
+            if len(chunk) < _PAGE:
+                break
+            off += _PAGE
+    return total
 
 
 def recalculate_partner_upline_chain(partner_id: str) -> None:
@@ -63,15 +158,17 @@ def recalculate_partner_upline_chain(partner_id: str) -> None:
 
 def recalculate_partner_portfolio(partner_id: str) -> None:
     """
-    Recompute and persist portfolio / MLM aggregates for one partner (userId = agentId on investments).
+    Recompute and persist partner dashboard columns from ``investments`` (as agent) and
+    ``partner_commission_schedules`` (as beneficiary). Uses paginated reads so totals are not
+    truncated at the PostgREST default row cap.
 
-    ``portfolioAmount`` / ``paidAmount`` / ``selfEarningAmount`` / ``teamEarningAmount`` count only
-    **paid** ``partner_commission_schedules`` rows. ``pendingAmount`` sums **pending** + **due** rows.
-    ``upcomingNetNextMonthPayment`` sums **pending** and **due** ``partner_commission_schedules``
-    for this beneficiary (**level 0 direct agent + level ≥ 1 team / upline**) whose ``payoutDate``
-    falls in the **next** UTC calendar month (inclusive bounds, same as participant schedules).
-    Participant payment schedule PATCH mirrors commission line status per month (see
-    ``sync_partner_commission_status_for_month``).
+    - **portfolioAmount** / **paidAmount**: total **paid** commission (self + team) for this partner.
+    - **selfEarningAmount**: **paid** rows with **level 0** (direct agent on the deal).
+    - **teamEarningAmount**: **paid** rows with **level ≥ 1** (team / upline paid to this partner).
+    - **pendingAmount**: sum of **pending** + **due** accruals not yet paid.
+    - **upcomingNetNextMonthPayment**: **pending** + **due** with ``payoutDate`` in the **next** UTC month.
+    - **totalBusiness**: sum of **investedAmount** (qualifying statuses) for investments where **agentId** is
+      this partner or any partner in their downline introducer tree (group book).
     """
     pid = str(partner_id or "").strip()
     if not pid:
@@ -79,17 +176,7 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
     pk_col = camel_partner_pk_column()
     now = datetime.now(timezone.utc).isoformat()
 
-    try:
-        inv_res = (
-            supabase.table(_INVEST)
-            .select("*")
-            .eq("agentId", pid)
-            .execute()
-        )
-        invs = list(inv_res.data or [])
-    except APIError as e:
-        logger.warning("recalculate_partner_portfolio: investments query failed for %s: %s", pid, e)
-        return
+    invs = _fetch_all_investments_as_agent(pid)
 
     participant_invested = 0.0
     for r in invs:
@@ -108,40 +195,31 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
 
     total_team_members = count_downline_partners(pid)
 
+    lineage = downline_partner_ids_including_self(pid)
+    total_business = _sum_principal_for_agent_ids(lineage)
+
     self_earn_paid = 0.0
     team_earn_paid = 0.0
     commission_pending = 0.0
     nm_lo, nm_hi = next_month_bounds_utc()
     upcoming_next_month = 0.0
-    try:
-        ce_res = (
-            supabase.table("partner_commission_schedules")
-            .select("amount,status,level,payoutDate")
-            .eq("beneficiaryPartnerId", pid)
-            .execute()
-        )
-        for row in ce_res.data or []:
-            st = str(row.get("status") or "").strip()
-            if st not in ("pending", "due", "paid"):
-                continue
-            a = _f(row.get("amount"))
-            lv = int(row.get("level") or 0)
-            if st == "paid":
-                if lv <= 0:
-                    self_earn_paid += a
-                else:
-                    team_earn_paid += a
-            elif st in ("pending", "due"):
-                commission_pending += a
-                pd = parse_timestamptz(row.get("payoutDate"))
-                if pd is not None and nm_lo <= pd <= nm_hi:
-                    upcoming_next_month += a
-    except APIError as e:
-        logger.warning(
-            "recalculate_partner_portfolio: commission schedules query failed for %s: %s",
-            pid,
-            e,
-        )
+    commission_rows = _fetch_all_commission_lines_for_beneficiary(pid)
+    for row in commission_rows:
+        st = str(row.get("status") or "").strip()
+        if st not in ("pending", "due", "paid"):
+            continue
+        a = _f(row.get("amount"))
+        lv = int(row.get("level") or 0)
+        if st == "paid":
+            if lv <= 0:
+                self_earn_paid += a
+            else:
+                team_earn_paid += a
+        elif st in ("pending", "due"):
+            commission_pending += a
+            pd = parse_timestamptz(row.get("payoutDate"))
+            if pd is not None and nm_lo <= pd <= nm_hi:
+                upcoming_next_month += a
 
     portfolio_amount = self_earn_paid + team_earn_paid
     paid_total = portfolio_amount
@@ -169,6 +247,7 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
         "teamEarningAmount": round(team_earn_paid, 2),
         "totalDeals": int(total_deals),
         "totalTeamMembers": int(total_team_members),
+        "totalBusiness": round(total_business, 2),
         "upcomingNetNextMonthPayment": round(upcoming_next_month, 2),
         "portfolioUpdatedAt": now,
     }
@@ -180,7 +259,7 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
         missing = "42703" in str(raw) or "column" in str(e).lower() if e else True
         if missing:
             logger.warning(
-                "recalculate_partner_portfolio: update failed (run supabase_partners_mlm_portfolio_columns.sql?) %s: %s",
+                "recalculate_partner_portfolio: update failed (run SQL for portfolio columns / totalBusiness?) %s: %s",
                 pid,
                 e,
             )

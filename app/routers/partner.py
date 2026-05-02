@@ -12,6 +12,7 @@ from app.schemas.auth import LoginRequest, TokenResponse
 from app.schemas.investment import InvestmentResponse, PartnerCommissionScheduleResponse
 from app.schemas.partner import (
     PartnerAccountBasicResponse,
+    PartnerProfileResponse,
     PartnerResponse,
     PartnerSelfProfilePatch,
     PartnerTeamMemberNode,
@@ -134,13 +135,45 @@ def get_partner_account(
 
 @router.get(
     "/profile",
-    response_model=PartnerAccountBasicResponse,
-    summary="Same as GET /partner/account (basic details only)",
+    response_model=PartnerProfileResponse,
+    summary="Full partner row with MLM/portfolio fields (recalculated on each request; mpin omitted)",
 )
 def get_partner_profile(
     current_user: dict = Depends(require_role(["partner"])),
 ):
-    return _row_to_account_basic(_partner_row_by_phone(current_user["sub"]))
+    base = _partner_row_by_phone(current_user["sub"])
+    uid = str(
+        base.get("partnerId")
+        or base.get("agentId")
+        or current_user.get("userId")
+        or "",
+    ).strip()
+    if not uid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Partner record is missing partnerId",
+        )
+    recalculate_partner_portfolio(uid)
+    prid = camel_partner_pk_column()
+    try:
+        result = (
+            supabase.table("partners")
+            .select("*")
+            .eq(prid, uid)
+            .limit(1)
+            .execute()
+        )
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+    if not result.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Partner not found",
+        )
+    return PartnerProfileResponse.model_validate(result.data[0])
 
 
 @router.patch("/profile", response_model=PartnerAccountBasicResponse)
