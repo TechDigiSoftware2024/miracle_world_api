@@ -1,6 +1,7 @@
 """Generate partner commission schedule rows when an investment becomes Active."""
 
 from datetime import datetime, timezone
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Optional
 
 from postgrest.exceptions import APIError
@@ -11,6 +12,30 @@ from app.utils.db_column_names import camel_partner_pk_column
 from app.utils.investment_schedule import calculate_payment_schedule
 
 _TABLE = "partner_commission_schedules"
+_TWO_DP = Decimal("0.01")
+
+
+def _money2(x: Decimal) -> Decimal:
+    return x.quantize(_TWO_DP, rounding=ROUND_HALF_UP)
+
+
+def _commission_amount_for_schedule_line(
+    invested: float,
+    rate_percent: float,
+    participant_line_amount: float,
+    monthly_nominal: float,
+) -> float:
+    """
+    Full-month commission accrual is ``invested × rate / 100``; scale by the same factor as the
+    participant line vs nominal monthly ``M`` (prorata first month, adjustment last month).
+    """
+    m = _money2(Decimal(str(monthly_nominal)))
+    if m <= 0:
+        return 0.0
+    line_amt = _money2(Decimal(str(float(participant_line_amount))))
+    scale = line_amt / m
+    base = _money2(Decimal(str(invested)) * Decimal(str(rate_percent)) / Decimal("100"))
+    return float(_money2(base * scale))
 
 
 def sync_partner_commission_status_for_month(
@@ -128,7 +153,9 @@ def replace_partner_commission_schedules(
 ) -> None:
     """
     Replace all commission lines for this investment: same months/payout dates as participant
-    payment_schedules; amount = investedAmount × ratePercent / 100 per line per month.
+    ``payment_schedules`` (including prorata first line and closing adjustment when activation is
+    mid-month). Each line amount is ``investedAmount × ratePercent / 100`` scaled by
+    ``participant_line_amount / monthlyPayout`` so partner accrual matches participant schedule math.
     """
     iid = str(investment_id or "").strip()
     if not iid:
@@ -163,9 +190,12 @@ def replace_partner_commission_schedules(
         else:
             pds = str(pd)
 
+        line_participant_amt = float(sched_row.get("amount") or 0)
         for hop in hops:
             rate = float(hop["ratePercent"])
-            amt = round(invested * rate / 100.0, 2)
+            amt = _commission_amount_for_schedule_line(
+                invested, rate, line_participant_amt, monthly
+            )
             if amt <= 0:
                 continue
             db_rows.append({

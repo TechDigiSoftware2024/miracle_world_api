@@ -209,9 +209,11 @@ class PartnerCommissionScheduleResponse(BaseModel):
     level: int = Field(description="0 = direct agent on deal; 1+ = uplines.")
     ratePercent: float = Field(
         validation_alias=AliasChoices("ratePercent", "rate_percent"),
-        description="Snapshot % of invested principal for this line (monthly).",
+        description="Snapshot % of invested principal for this line (per full nominal month M; row amount is scaled for prorata/adjustment).",
     )
-    amount: float
+    amount: float = Field(
+        description="Commission for this period: principal × rate/100 × (participant schedule line amount / monthlyPayout).",
+    )
     status: PartnerCommissionLineStatus
     createdAt: datetime = Field(validation_alias=AliasChoices("createdAt", "created_at"))
     updatedAt: Optional[datetime] = Field(
