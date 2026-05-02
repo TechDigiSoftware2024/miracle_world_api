@@ -67,8 +67,9 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
 
     ``portfolioAmount`` / ``paidAmount`` / ``selfEarningAmount`` / ``teamEarningAmount`` count only
     **paid** ``partner_commission_schedules`` rows. ``pendingAmount`` sums **pending** + **due** rows.
-    ``upcomingNetNextMonthPayment`` sums **pending** and **due** rows whose ``payoutDate`` falls in the
-    **next** UTC calendar month (inclusive bounds, same as participant payment schedules).
+    ``upcomingNetNextMonthPayment`` sums **pending** and **due** ``partner_commission_schedules``
+    for this beneficiary (**level 0 direct agent + level ≥ 1 team / upline**) whose ``payoutDate``
+    falls in the **next** UTC calendar month (inclusive bounds, same as participant schedules).
     Participant payment schedule PATCH mirrors commission line status per month (see
     ``sync_partner_commission_status_for_month``).
     """
@@ -132,8 +133,8 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
                     team_earn_paid += a
             elif st in ("pending", "due"):
                 commission_pending += a
-                pds = str(row.get("payoutDate") or "")
-                if pds and lo_iso <= pds <= hi_iso:
+                pd = parse_timestamptz(row.get("payoutDate"))
+                if pd is not None and nm_lo <= pd <= nm_hi:
                     upcoming_next_month += a
     except APIError as e:
         logger.warning(

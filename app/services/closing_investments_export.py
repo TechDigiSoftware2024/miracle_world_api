@@ -45,6 +45,35 @@ def _payout_in_utc_month(val: Any, year: int, month: int) -> bool:
     return d.year == int(year) and d.month == int(month)
 
 
+def _schedule_lines_in_utc_month(lines: list[dict], y: int, mo: int) -> list[dict]:
+    """All schedule rows whose payoutDate falls in the closing calendar month (any status)."""
+    return [ln for ln in lines if _payout_in_utc_month(ln.get("payoutDate"), y, mo)]
+
+
+def _rollup_participant_month_amount_status(month_lines: list[dict]) -> tuple[float, str, str]:
+    """
+    Sum amounts for all participant lines in the month (paid, due, pending all included).
+    Returns (total_amount, payout_date_iso, status_label).
+    """
+    if not month_lines:
+        return 0.0, "", ""
+    amt = round(sum(_f(ln.get("amount")) for ln in month_lines), 2)
+    sorted_ln = sorted(month_lines, key=lambda x: _coerce_dt(x.get("payoutDate")))
+    d0 = _coerce_dt(sorted_ln[0].get("payoutDate")).date().isoformat()
+    lowered = {
+        str(ln.get("status") or "").strip().lower()
+        for ln in month_lines
+        if str(ln.get("status") or "").strip()
+    }
+    if len(lowered) == 1:
+        st = str(sorted_ln[0].get("status") or "")
+    elif len(lowered) > 1:
+        st = "mixed"
+    else:
+        st = ""
+    return amt, d0, st
+
+
 def _parse_iso_date(s: Optional[str]) -> Optional[date]:
     """Return date from YYYY-MM-DD or None."""
     if not s or not str(s).strip():
@@ -517,15 +546,14 @@ def build_closing_investments_export(
         }
         by_investment.append(bi)
 
-        # Monthly participants sheet: participant schedule line in month
+        # Monthly participants sheet: all participant schedule lines in month (paid / due / pending)
         ps_lines = ps_by_inv.get(iid, [])
-        month_line = next((ln for ln in ps_lines if _payout_in_utc_month(ln.get("payoutDate"), y, mo)), None)
-        if month_line is None:
+        month_lines_ps = _schedule_lines_in_utc_month(ps_lines, y, mo)
+        if not month_lines_ps:
             continue
-        payout_amt = _f(month_line.get("amount"))
-        payout_status = str(month_line.get("status") or "")
-        payout_date = _coerce_dt(month_line.get("payoutDate")).date().isoformat()
-        assured = core["isAssuredFund"]
+        payout_amt, payout_date, payout_status = _rollup_participant_month_amount_status(
+            month_lines_ps
+        )
 
         if not ordered_bids:
             monthly_participants.append({
@@ -551,8 +579,8 @@ def build_closing_investments_export(
                 comm_this = 0.0
                 for ln in lines_b:
                     if _payout_in_utc_month(ln.get("payoutDate"), y, mo):
-                        comm_this = _f(ln.get("amount"))
-                        break
+                        comm_this += _f(ln.get("amount"))
+                comm_this = round(comm_this, 2)
                 monthly_participants.append({
                     **core,
                     **partner_cols(bid, {**agg, "ratePercent": lines_b[0].get("ratePercent")}),
@@ -577,11 +605,11 @@ def build_closing_investments_export(
         if not iid or not pid:
             continue
         ps_lines = ps_by_inv.get(iid, [])
-        month_line = next((ln for ln in ps_lines if _payout_in_utc_month(ln.get("payoutDate"), y, mo)), None)
-        if month_line is None:
+        month_lines_ps = _schedule_lines_in_utc_month(ps_lines, y, mo)
+        if not month_lines_ps:
             continue
         core = inv_core(inv, pid)
-        payout = _f(month_line.get("amount"))
+        payout, _, _ = _rollup_participant_month_amount_status(month_lines_ps)
         assured = core["isAssuredFund"]
         tds, net_a = _participant_tds(payout, assured, tds_rate)
         agg = part_sum.setdefault(

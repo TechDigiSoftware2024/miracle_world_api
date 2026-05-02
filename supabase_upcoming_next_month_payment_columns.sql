@@ -10,4 +10,4 @@ ALTER TABLE partners
 COMMENT ON COLUMN participants."upcomingNetNextMonthPayment" IS
     'Sum of payment_schedules (pending+due) with payoutDate in next UTC calendar month for this participant.';
 COMMENT ON COLUMN partners."upcomingNetNextMonthPayment" IS
-    'Sum of partner_commission_schedules (pending+due) with payoutDate in next UTC calendar month for this partner as beneficiary.';
+    'Sum of partner_commission_schedules (pending+due) with payoutDate in next UTC month: direct (level 0) + team/upline (level >= 1), beneficiary = this partner.';

@@ -74,8 +74,11 @@ def admin_closing_investments_export(
     year: int = Query(..., ge=2000, le=2100, description="Closing calendar year (UTC)"),
     month: int = Query(..., ge=1, le=12, description="Closing calendar month (UTC)"),
     investment_status: str = Query(
-        "Active",
-        description="Comma-separated investment status values (e.g. Active,Matured)",
+        "Active,Matured,Completed",
+        description=(
+            "Comma-separated investment row statuses. Default includes matured/completed "
+            "so historical closings still show paid months. Use Active only to narrow."
+        ),
         alias="investmentStatus",
     ),
     tds_rate_percent: float = Query(
@@ -130,6 +133,10 @@ def admin_closing_investments_export(
 
     **Filters** align with the admin Closing screen: status list, partner search (name / id / phone),
     investment date range, fund type chip, location (participant address), and participant search.
+
+    **Closing month**: ``year`` + ``month`` select the UTC calendar month for participant and partner
+    schedule rows. Rows are included for **paid, due, and pending** line status — this endpoint is for
+    export/reconciliation, not only outstanding accruals.
     """
     statuses = [s.strip() for s in (investment_status or "").split(",") if s.strip()]
     tds_rate = tds_rate_percent / 100.0

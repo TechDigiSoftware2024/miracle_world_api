@@ -22,6 +22,9 @@ ALTER TABLE partners ADD COLUMN IF NOT EXISTS "selfEarningAmount" DOUBLE PRECISI
 ALTER TABLE partners ADD COLUMN IF NOT EXISTS "teamEarningAmount" DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE partners ADD COLUMN IF NOT EXISTS "portfolioUpdatedAt" TIMESTAMPTZ;
 
+-- Legacy column (replaced by upcomingNetNextMonthPayment); safe if already dropped.
+ALTER TABLE public.partners DROP COLUMN IF EXISTS "perMonthPendingAmount";
+
 CREATE INDEX IF NOT EXISTS idx_investments_agent ON investments ("agentId");
 
 -- snake_case schemas: after migrating partners, optionally run:

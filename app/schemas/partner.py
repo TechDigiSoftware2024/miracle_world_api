@@ -79,8 +79,9 @@ class PartnerResponse(BaseModel):
     upcomingNetNextMonthPayment: float = Field(
         default=0.0,
         description=(
-            "Sum of pending/due partner_commission_schedules for this partner as beneficiary "
-            "with payoutDate in the next UTC calendar month; recalculated with portfolio fields."
+            "Sum of pending/due partner_commission_schedules for this beneficiary with payoutDate in the "
+            "next UTC calendar month, including direct commission (level 0) and team/upline (level ≥ 1); "
+            "recalculated with portfolio fields (same date logic as participants)."
         ),
     )
 
