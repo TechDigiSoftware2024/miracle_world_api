@@ -67,6 +67,11 @@ _ALLOWED_ACCESS_SECTIONS = {
     "manual_kyc",
     "rewards",
     "investments",
+    "pending_payments",
+    "closing_reports",
+    "schedule_visits",
+    "special_funds",
+    "partner_portfolio",
     "payouts",
     "admins",
 }

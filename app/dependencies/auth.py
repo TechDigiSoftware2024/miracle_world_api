@@ -25,8 +25,9 @@ _ADMIN_SECTION_BY_PREFIX = {
     "reward-achievements": "rewards",
     "investments": "investments",
     "payment-schedules": "investments",
-    "pending-payments": "investments",
-    "closing-reports": "investments",
+    "pending-payments": "pending_payments",
+    "closing-reports": "closing_reports",
+    "schedule-visits": "schedule_visits",
     "payouts": "payouts",
     "payout-recipients": "payouts",
     "admin-users": "admins",
@@ -49,7 +50,15 @@ def _admin_section_from_path(path: str) -> str | None:
         return None
     if p in _ALWAYS_ALLOWED_ADMIN_PATHS:
         return None
-    suffix = p[len("/admin/"):]
+    suffix = p[len("/admin/") :].strip()
+    if not suffix:
+        return None
+    # Multi-segment routes (must be checked before first-path-prefix rules).
+    if suffix.startswith("participants/special-funds"):
+        return "special_funds"
+    if suffix.startswith("partners/financials"):
+        return "partner_portfolio"
+
     first = suffix.split("/", 1)[0].strip()
     if not first:
         return None
