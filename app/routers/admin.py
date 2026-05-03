@@ -11,7 +11,7 @@ from app.db.database import supabase
 from app.dependencies.auth import bearer_scheme, require_role
 from app.core.security import create_token, decode_token
 from app.schemas.auth import LoginRequest, TokenResponse
-from app.schemas.admin import AdminResponse
+from app.schemas.admin import AdminPartnerFinancialSummaryResponse, AdminResponse
 from app.schemas.user_request import RequestResponse
 from app.schemas.participant import AdminParticipantProfilePatch, ParticipantResponse
 from app.schemas.investment import InvestmentResponse, PartnerCommissionScheduleResponse
@@ -227,6 +227,69 @@ def admin_list_partners(
     prid = camel_partner_pk_column()
     result = supabase.table("partners").select("*").order(prid).execute()
     return result.data
+
+
+@router.get(
+    "/partners/financials",
+    response_model=List[AdminPartnerFinancialSummaryResponse],
+    summary="Search partner financial amounts by partnerId and/or name",
+)
+def admin_get_partner_financials(
+    partnerId: Optional[str] = Query(
+        None,
+        description="Exact partner id (partnerId/agentId).",
+    ),
+    name: Optional[str] = Query(
+        None,
+        description="Partner name (partial match, case-insensitive).",
+    ),
+    _: dict = Depends(require_role(["admin"])),
+):
+    partner_id = str(partnerId or "").strip()
+    partner_name = str(name or "").strip()
+    if not partner_id and not partner_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provide at least one filter: partnerId or name",
+        )
+    prid = camel_partner_pk_column()
+    try:
+        q = supabase.table("partners").select(
+            f"{prid},name,portfolioAmount,totalBusiness,participantInvestedTotal,paidAmount,pendingAmount,selfEarningAmount,teamEarningAmount"
+        )
+        if partner_id:
+            q = q.eq(prid, partner_id)
+        if partner_name:
+            q = q.ilike("name", f"%{partner_name}%")
+        result = q.order("name").limit(100).execute()
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+    rows = result.data or []
+    if not rows:
+        return []
+    out: List[AdminPartnerFinancialSummaryResponse] = []
+    for row in rows:
+        pid = str(row.get(prid) or "").strip()
+        if not pid:
+            continue
+        recalculate_partner_portfolio(pid)
+        fresh = (
+            supabase.table("partners")
+            .select(
+                f"{prid},name,portfolioAmount,totalBusiness,participantInvestedTotal,paidAmount,pendingAmount,selfEarningAmount,teamEarningAmount"
+            )
+            .eq(prid, pid)
+            .limit(1)
+            .execute()
+        )
+        if fresh.data:
+            out.append(AdminPartnerFinancialSummaryResponse.model_validate(fresh.data[0]))
+        else:
+            out.append(AdminPartnerFinancialSummaryResponse.model_validate(row))
+    return out
 
 
 def _assert_children_fit_parent_self_commission(partner_id: str, new_cap: float) -> None:
