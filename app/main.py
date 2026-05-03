@@ -111,7 +111,9 @@ def seed_defaults() -> None:
             "name": "Arjun",
             "phone": "9131718611",
             "mpin": "000000",
+            "role": "super_admin",
             "access_sections": "all",
+            "status": "active",
         }).execute()
 
     pid = camel_participant_pk_column()

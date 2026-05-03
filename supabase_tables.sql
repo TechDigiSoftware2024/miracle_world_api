@@ -8,8 +8,10 @@ CREATE TABLE IF NOT EXISTS admins (
     name TEXT NOT NULL,
     phone TEXT UNIQUE NOT NULL,
     mpin TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'super_admin',
     access_sections TEXT NOT NULL DEFAULT 'all',
     status TEXT NOT NULL DEFAULT 'active',
+    "createdByAdminId" TEXT REFERENCES admins ("adminId") ON DELETE SET NULL,
     "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

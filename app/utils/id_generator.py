@@ -29,3 +29,17 @@ def generate_partner_id(*, id_column: str = "partnerId") -> str:
         )
         if not result.data:
             return new_id
+
+
+def generate_admin_id(*, id_column: str = "adminId") -> str:
+    """Generate a unique admin ID in format MWA + 6 digits."""
+    while True:
+        new_id = f"MWA{random.randint(100000, 999999)}"
+        result = (
+            supabase.table("admins")
+            .select(id_column)
+            .eq(id_column, new_id)
+            .execute()
+        )
+        if not result.data:
+            return new_id

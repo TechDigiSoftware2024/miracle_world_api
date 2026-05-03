@@ -11,7 +11,14 @@ from app.db.database import supabase
 from app.dependencies.auth import bearer_scheme, require_role
 from app.core.security import create_token, decode_token
 from app.schemas.auth import LoginRequest, TokenResponse
-from app.schemas.admin import AdminPartnerFinancialSummaryResponse, AdminResponse
+from app.schemas.admin import (
+    AdminPartnerFinancialSummaryResponse,
+    AdminResponse,
+    AdminUserAccessPatchRequest,
+    AdminUserCreateRequest,
+    AdminUserPatchRequest,
+    AdminUserStatusPatchRequest,
+)
 from app.schemas.user_request import RequestResponse
 from app.schemas.participant import AdminParticipantProfilePatch, ParticipantResponse
 from app.schemas.investment import InvestmentResponse, PartnerCommissionScheduleResponse
@@ -24,7 +31,7 @@ from app.schemas.partner import (
 from app.schemas.contact import ContactQueryResponse
 from app.schemas.app_settings import AppSettingsResponse, AppSettingsUpdate
 from app.schemas.schedule_visit import ScheduleVisitDeleteResponse, ScheduleVisitResponse
-from app.utils.id_generator import generate_participant_id, generate_partner_id
+from app.utils.id_generator import generate_admin_id, generate_participant_id, generate_partner_id
 from app.utils.db_column_names import camel_participant_pk_column, camel_partner_pk_column
 from app.utils.patch_payload import dump_update_or_400
 from app.utils.supabase_errors import format_api_error
@@ -46,6 +53,79 @@ from app.utils.supabase_columns import (
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
+_ALLOWED_ACCESS_SECTIONS = {
+    "all",
+    "requests",
+    "participants",
+    "partners",
+    "contact_queries",
+    "settings",
+    "fund_types",
+    "properties",
+    "bank_details",
+    "nominees",
+    "manual_kyc",
+    "rewards",
+    "investments",
+    "payouts",
+    "admins",
+}
+
+
+def _normalize_admin_role(raw: str | None) -> str:
+    role = str(raw or "sub_admin").strip().lower()
+    if role not in {"super_admin", "sub_admin"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="role must be super_admin or sub_admin",
+        )
+    return role
+
+
+def _normalize_admin_status(raw: str | None) -> str:
+    val = str(raw or "active").strip().lower()
+    if val not in {"active", "inactive"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="status must be active or inactive",
+        )
+    return val
+
+
+def _normalize_access_sections(raw: str | None, *, role: str) -> str:
+    if role == "super_admin":
+        return "all"
+    tokens = [x.strip().lower() for x in str(raw or "").split(",") if x.strip()]
+    if not tokens:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Sub-admin access_sections cannot be empty",
+        )
+    bad = sorted({x for x in tokens if x not in _ALLOWED_ACCESS_SECTIONS or x == "all"})
+    if bad:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid access sections: {', '.join(bad)}",
+        )
+    uniq = sorted(set(tokens))
+    return ",".join(uniq)
+
+
+def _assert_super_admin(current_user: dict) -> str:
+    admin_role = str(current_user.get("adminRole") or "").strip().lower()
+    if admin_role != "super_admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only super admin can manage admin users",
+        )
+    admin_id = str(current_user.get("adminId") or current_user.get("userId") or "").strip()
+    if not admin_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token is missing admin id",
+        )
+    return admin_id
+
 # ─── PUBLIC: Login ───────────────────────────────────────────────
 
 
@@ -65,10 +145,20 @@ def admin_login(payload: LoginRequest):
         )
 
     admin = result.data[0]
+    if str(admin.get("status") or "active").strip().lower() != "active":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin account is inactive",
+        )
+    admin_role = str(admin.get("role") or "super_admin").strip().lower()
+    access_sections = str(admin.get("access_sections") or "all").strip().lower() or "all"
     token = create_token({
         "sub": admin["phone"],
         "role": "admin",
         "userId": admin["adminId"],
+        "adminId": admin["adminId"],
+        "adminRole": admin_role,
+        "accessSections": access_sections,
         "name": admin["name"],
     })
 
@@ -118,6 +208,250 @@ def get_admin_profile(
             detail="Admin not found",
         )
     return result.data[0]
+
+
+# ─── PROTECTED: Admin users (super admin only) ───────────────────
+
+
+@router.get("/admin-users", response_model=List[AdminResponse])
+def admin_list_admin_users(
+    current_user: dict = Depends(require_role(["admin"])),
+):
+    _assert_super_admin(current_user)
+    try:
+        result = supabase.table("admins").select("*").order("createdAt", desc=True).execute()
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+    return [AdminResponse.model_validate(r) for r in (result.data or [])]
+
+
+@router.post("/admin-users", response_model=AdminResponse, status_code=status.HTTP_201_CREATED)
+def admin_create_admin_user(
+    payload: AdminUserCreateRequest,
+    current_user: dict = Depends(require_role(["admin"])),
+):
+    created_by = _assert_super_admin(current_user)
+    role = _normalize_admin_role(payload.role)
+    status_v = _normalize_admin_status(payload.status)
+    access_sections = _normalize_access_sections(payload.access_sections, role=role)
+    phone = str(payload.phone or "").strip()
+    name = str(payload.name or "").strip()
+    mpin = str(payload.mpin or "").strip()
+    if not phone or not name or not mpin:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="name, phone and mpin are required",
+        )
+    try:
+        dup = supabase.table("admins").select("adminId").eq("phone", phone).limit(1).execute()
+        if dup.data:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Admin account already exists for this phone",
+            )
+        new_admin_id = generate_admin_id()
+        inserted = (
+            supabase.table("admins")
+            .insert({
+                "adminId": new_admin_id,
+                "name": name,
+                "phone": phone,
+                "mpin": mpin,
+                "role": role,
+                "access_sections": access_sections,
+                "status": status_v,
+                "createdByAdminId": created_by,
+            })
+            .execute()
+        )
+    except HTTPException:
+        raise
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+    row = inserted.data[0] if inserted.data else None
+    if not row:
+        refetch = (
+            supabase.table("admins")
+            .select("*")
+            .eq("adminId", new_admin_id)
+            .limit(1)
+            .execute()
+        )
+        row = refetch.data[0] if refetch.data else None
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not read admin user after create",
+        )
+    return AdminResponse.model_validate(row)
+
+
+@router.patch("/admin-users/{admin_id}", response_model=AdminResponse)
+def admin_patch_admin_user(
+    admin_id: str,
+    payload: AdminUserPatchRequest,
+    current_user: dict = Depends(require_role(["admin"])),
+):
+    actor = _assert_super_admin(current_user)
+    target_id = str(admin_id or "").strip()
+    if not target_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid admin id",
+        )
+    existing = supabase.table("admins").select("*").eq("adminId", target_id).limit(1).execute()
+    if not existing.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Admin user not found",
+        )
+    prev = existing.data[0]
+    patch = dump_update_or_400(payload)
+    if not patch:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No valid fields to update",
+        )
+    if target_id == actor:
+        if "role" in patch and str(patch.get("role") or "").strip().lower() != "super_admin":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You cannot demote your own super admin role",
+            )
+    role = _normalize_admin_role(patch.get("role") if "role" in patch else prev.get("role"))
+    if "status" in patch:
+        patch["status"] = _normalize_admin_status(patch.get("status"))
+    if "access_sections" in patch or "role" in patch:
+        patch["access_sections"] = _normalize_access_sections(
+            patch.get("access_sections", prev.get("access_sections")),
+            role=role,
+        )
+    patch["role"] = role
+    if "phone" in patch:
+        phone = str(patch.get("phone") or "").strip()
+        if not phone:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="phone cannot be empty",
+            )
+        dup = (
+            supabase.table("admins")
+            .select("adminId")
+            .eq("phone", phone)
+            .limit(1)
+            .execute()
+        )
+        if dup.data and str(dup.data[0].get("adminId") or "") != target_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Phone is already used by another admin",
+            )
+        patch["phone"] = phone
+    if "name" in patch:
+        patch["name"] = str(patch.get("name") or "").strip()
+    if "mpin" in patch:
+        patch["mpin"] = str(patch.get("mpin") or "").strip()
+    try:
+        updated = supabase.table("admins").update(patch).eq("adminId", target_id).execute()
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+    row = updated.data[0] if updated.data else None
+    if not row:
+        refetch = supabase.table("admins").select("*").eq("adminId", target_id).limit(1).execute()
+        row = refetch.data[0] if refetch.data else None
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not read admin user after update",
+        )
+    return AdminResponse.model_validate(row)
+
+
+@router.patch("/admin-users/{admin_id}/access", response_model=AdminResponse)
+def admin_patch_admin_user_access(
+    admin_id: str,
+    payload: AdminUserAccessPatchRequest,
+    current_user: dict = Depends(require_role(["admin"])),
+):
+    _assert_super_admin(current_user)
+    target_id = str(admin_id or "").strip()
+    existing = supabase.table("admins").select("*").eq("adminId", target_id).limit(1).execute()
+    if not existing.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Admin user not found",
+        )
+    prev = existing.data[0]
+    role = _normalize_admin_role(prev.get("role"))
+    access_sections = _normalize_access_sections(payload.access_sections, role=role)
+    try:
+        updated = (
+            supabase.table("admins")
+            .update({"access_sections": access_sections})
+            .eq("adminId", target_id)
+            .execute()
+        )
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+    row = updated.data[0] if updated.data else None
+    if not row:
+        refetch = supabase.table("admins").select("*").eq("adminId", target_id).limit(1).execute()
+        row = refetch.data[0] if refetch.data else None
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not read admin user after access update",
+        )
+    return AdminResponse.model_validate(row)
+
+
+@router.patch("/admin-users/{admin_id}/status", response_model=AdminResponse)
+def admin_patch_admin_user_status(
+    admin_id: str,
+    payload: AdminUserStatusPatchRequest,
+    current_user: dict = Depends(require_role(["admin"])),
+):
+    actor = _assert_super_admin(current_user)
+    target_id = str(admin_id or "").strip()
+    if target_id == actor and _normalize_admin_status(payload.status) != "active":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You cannot deactivate your own account",
+        )
+    try:
+        updated = (
+            supabase.table("admins")
+            .update({"status": _normalize_admin_status(payload.status)})
+            .eq("adminId", target_id)
+            .execute()
+        )
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+    row = updated.data[0] if updated.data else None
+    if not row:
+        refetch = supabase.table("admins").select("*").eq("adminId", target_id).limit(1).execute()
+        row = refetch.data[0] if refetch.data else None
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Admin user not found",
+        )
+    return AdminResponse.model_validate(row)
 
 
 # ─── PROTECTED: Get All Requests ─────────────────────────────────
