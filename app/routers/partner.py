@@ -39,6 +39,34 @@ _TABLE_INV = "investments"
 _TABLE_PC = "partner_commission_schedules"
 
 
+def _list_active_reward_program_rows() -> list[dict]:
+    """
+    Read active reward programs with compatibility for camelCase/snake_case DB columns.
+    """
+    try:
+        res = (
+            supabase.table("reward_programs")
+            .select("*")
+            .eq("isActive", True)
+            .order("startDate", desc=True)
+            .execute()
+        )
+        return res.data or []
+    except APIError as first_err:
+        msg = str(first_err).lower()
+        # Some environments still use snake_case columns.
+        if "column" not in msg and "isactive" not in msg:
+            raise
+    res = (
+        supabase.table("reward_programs")
+        .select("*")
+        .eq("is_active", True)
+        .order("startDate", desc=True)
+        .execute()
+    )
+    return res.data or []
+
+
 def _row_to_account_basic(row: dict) -> PartnerAccountBasicResponse:
     return PartnerAccountBasicResponse(
         partnerId=str(row.get("partnerId") or row.get("agentId") or ""),
@@ -451,14 +479,7 @@ def partner_list_active_reward_programs(
             detail="Token is missing userId",
         )
     try:
-        prog = (
-            supabase.table("reward_programs")
-            .select("*")
-            .eq("isActive", True)
-            .order("startDate", desc=True)
-            .execute()
-        )
-        rows = prog.data or []
+        rows = _list_active_reward_program_rows()
         if not rows:
             return []
         ids = [int(r["id"]) for r in rows]
@@ -478,7 +499,10 @@ def partner_list_active_reward_programs(
             prog_id = int(r["id"])
             offers = [RewardOfferResponse.model_validate(x) for x in by_prog.get(prog_id, [])]
             base = RewardProgramResponse.model_validate(r)
-            raw_prog = compute_progress_for_partner_program(r, uid)
+            try:
+                raw_prog = compute_progress_for_partner_program(r, uid)
+            except Exception:
+                raw_prog = []
             prog_models = [RewardProgramProgress.model_validate(x) for x in raw_prog]
             has_eligible = any(p.goalReached for p in prog_models)
             out.append(
