@@ -7,7 +7,11 @@ from app.services.partner_portfolio_recalc import recalculate_partner_portfolio
 from app.utils.db_column_names import camel_partner_pk_column
 
 
-def sync_children_introducer_commission_rates(parent_partner_id: str) -> None:
+def sync_children_introducer_commission_rates(
+    parent_partner_id: str,
+    *,
+    recalculate_children: bool = True,
+) -> None:
     """Recompute introducerCommission for every direct child partner of this parent."""
     pid = str(parent_partner_id or "").strip()
     if not pid:
@@ -34,4 +38,28 @@ def sync_children_introducer_commission_rates(parent_partner_id: str) -> None:
             supabase.table("partners").update({"introducerCommission": ic}).eq(pk, cid).execute()
         except APIError:
             continue
-        recalculate_partner_portfolio(cid)
+        if recalculate_children:
+            recalculate_partner_portfolio(cid)
+
+
+def sync_all_children_introducer_commission_rates() -> int:
+    """
+    For every partner id that appears as ``introducer`` on another row, reapply
+    ``introducerCommission = parent.selfCommission − child.selfCommission`` on direct children.
+    Does not recalc portfolios per child; call :func:`recalculate_all_partner_portfolios` after.
+    """
+    pk = camel_partner_pk_column()
+    try:
+        res = supabase.table("partners").select("introducer").execute()
+    except APIError:
+        return 0
+    parents: set[str] = set()
+    for row in res.data or []:
+        intro = str(row.get("introducer") or "").strip()
+        if intro and intro.upper() != "SYSTEM":
+            parents.add(intro)
+    n = 0
+    for pid in sorted(parents):
+        sync_children_introducer_commission_rates(pid, recalculate_children=False)
+        n += 1
+    return n

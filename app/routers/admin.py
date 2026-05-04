@@ -5,7 +5,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials
 from postgrest.exceptions import APIError
-from pydantic import ValidationError
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 
 from app.db.database import supabase
 from app.dependencies.auth import bearer_scheme, require_role
@@ -37,11 +37,15 @@ from app.utils.patch_payload import dump_update_or_400
 from app.utils.supabase_errors import format_api_error
 from app.utils.app_settings_repo import fetch_app_settings_row
 from app.services.partner_portfolio_recalc import (
+    recalculate_all_partner_portfolios,
     recalculate_partner_portfolio,
     recalculate_partner_upline_chain,
 )
 from app.utils.partner_child_commission import child_commission_fields_or_error
-from app.utils.partner_commission import sync_children_introducer_commission_rates
+from app.utils.partner_commission import (
+    sync_all_children_introducer_commission_rates,
+    sync_children_introducer_commission_rates,
+)
 from app.utils.partner_team import team_tree_for_partner
 from app.utils.participant_fund_types import enrich_participant_row_with_special_fund_ids
 from app.utils.supabase_columns import (
@@ -52,6 +56,24 @@ from app.utils.supabase_columns import (
 )
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
+
+
+class PartnerMlmRecalcRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    sync_introducer_commission_rates: bool = Field(
+        True,
+        validation_alias=AliasChoices("syncIntroducerCommissionRates", "sync_introducer_commission_rates"),
+        description=(
+            "Reapply direct-child **introducerCommission** = parent.selfCommission − child.self "
+            "for every parent in the downline (skips introducer SYSTEM). "
+            "Set false to only recompute **totalTeamMembers**, **introducerCommissionAmount**, and other portfolio fields."
+        ),
+    )
+
+
+class PartnerMlmRecalcResponse(BaseModel):
+    parents_synced: int
+    partners_recalculated: int
 
 _ALLOWED_ACCESS_SECTIONS = {
     "all",
@@ -629,6 +651,30 @@ def admin_get_partner_financials(
         else:
             out.append(AdminPartnerFinancialSummaryResponse.model_validate(row))
     return out
+
+
+@router.post(
+    "/partners/recalculate-mlm-fields",
+    response_model=PartnerMlmRecalcResponse,
+    summary="Recalculate partner MLM fields after bulk import",
+    description=(
+        "Optional: sync **introducerCommission** rates on direct children using stored **selfCommission** "
+        "(same rule as commission endpoints). Always runs a full portfolio pass so **totalTeamMembers**, "
+        "**introducerCommissionAmount**, **totalBusiness**, and schedule totals match current data."
+    ),
+)
+def admin_recalculate_partner_mlm_fields(
+    body: PartnerMlmRecalcRequest = PartnerMlmRecalcRequest(),
+    _: dict = Depends(require_role(["admin"])),
+):
+    n_parents = 0
+    if body.sync_introducer_commission_rates:
+        n_parents = sync_all_children_introducer_commission_rates()
+    n_partners = recalculate_all_partner_portfolios()
+    return PartnerMlmRecalcResponse(
+        parents_synced=n_parents,
+        partners_recalculated=n_partners,
+    )
 
 
 def _assert_children_fit_parent_self_commission(partner_id: str, new_cap: float) -> None:
