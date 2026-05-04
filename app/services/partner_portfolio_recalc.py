@@ -128,6 +128,41 @@ def _sum_principal_for_agent_ids(agent_ids: list[str]) -> float:
     return total
 
 
+def recalculate_all_partner_portfolios() -> int:
+    """
+    Run :func:`recalculate_partner_portfolio` for every partner row (paginated).
+    Use after bulk investment/schedule changes (e.g. environment reset) so
+    introducer/totals/defaults match current data.
+    """
+    pk_col = camel_partner_pk_column()
+    n = 0
+    off = 0
+    while True:
+        try:
+            res = (
+                supabase.table("partners")
+                .select(pk_col)
+                .order(pk_col)
+                .range(off, off + _PAGE - 1)
+                .execute()
+            )
+        except APIError as e:
+            logger.warning("recalculate_all_partner_portfolios: list page %s: %s", off, e)
+            break
+        rows = list(res.data or [])
+        if not rows:
+            break
+        for r in rows:
+            pid = str(r.get(pk_col) or "").strip()
+            if pid:
+                recalculate_partner_portfolio(pid)
+                n += 1
+        if len(rows) < _PAGE:
+            break
+        off += _PAGE
+    return n
+
+
 def recalculate_partner_upline_chain(partner_id: str) -> None:
     """
     Recalculate portfolio for ``partner_id`` and every ancestor reachable via ``introducer``.

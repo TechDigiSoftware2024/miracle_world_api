@@ -3,6 +3,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from postgrest.exceptions import APIError
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from app.db.database import supabase
 from app.dependencies.auth import require_role
@@ -23,12 +24,42 @@ from app.services.partner_commission_schedule import (
     delete_partner_commission_schedules,
     replace_partner_commission_schedules,
 )
-from app.services.partner_portfolio_recalc import recalculate_partner_portfolio
-from app.services.participant_portfolio_recalc import recalculate_participant_portfolio, recalc_from_investment_id
+from app.services.partner_portfolio_recalc import (
+    recalculate_all_partner_portfolios,
+    recalculate_partner_portfolio,
+)
+from app.services.participant_portfolio_recalc import (
+    recalculate_all_participant_portfolios,
+    recalculate_participant_portfolio,
+    recalc_from_investment_id,
+)
 from app.utils.patch_payload import dump_update_or_400
 from app.utils.supabase_errors import format_api_error
 
 router = APIRouter(prefix="/investments", tags=["Admin", "Investments"])
+
+
+def _require_super_admin(current_user: dict) -> None:
+    if str(current_user.get("adminRole") or "").strip().lower() != "super_admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only super_admin may run this operation",
+        )
+
+
+class ResetInvestmentPipelineRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    truncate_tables: bool = Field(
+        True,
+        validation_alias=AliasChoices("truncateTables", "truncate_tables"),
+        description="If true, call PostgreSQL function reset_investment_tables() (apply supabase_reset_investment_pipeline.sql first).",
+    )
+
+
+class ResetInvestmentPipelineResponse(BaseModel):
+    truncated: bool
+    partners_recalculated: int
+    participants_recalculated: int
 
 _TABLE = "investments"
 _PS = "payment_schedules"
@@ -263,6 +294,40 @@ def admin_list_pending_investments(
             detail=format_api_error(e),
         ) from e
     return [InvestmentResponse.model_validate(r) for r in (result.data or [])]
+
+
+@router.post("/reset-pipeline", response_model=ResetInvestmentPipelineResponse)
+def admin_reset_investment_pipeline(
+    body: ResetInvestmentPipelineRequest = ResetInvestmentPipelineRequest(),
+    current_user: dict = Depends(require_role(["admin"])),
+):
+    """
+    Truncate all investment + schedule data (optional) and recompute every partner
+    (introducer commission amount, team size, business totals, schedule-based amounts)
+    and participant portfolio fields. **super_admin** only.
+    """
+    _require_super_admin(current_user)
+    truncated = False
+    if body.truncate_tables:
+        try:
+            supabase.rpc("reset_investment_tables", {}).execute()
+            truncated = True
+        except APIError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"{format_api_error(e)} "
+                    "If the function is missing, run supabase_reset_investment_pipeline.sql in the Supabase SQL editor, "
+                    "or call this endpoint with truncateTables false after truncating manually."
+                ),
+            ) from e
+    p_count = recalculate_all_participant_portfolios()
+    k_count = recalculate_all_partner_portfolios()
+    return ResetInvestmentPipelineResponse(
+        truncated=truncated,
+        participants_recalculated=p_count,
+        partners_recalculated=k_count,
+    )
 
 
 @router.post("", response_model=InvestmentResponse, status_code=status.HTTP_201_CREATED)

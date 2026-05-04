@@ -201,6 +201,40 @@ def recalculate_participant_portfolio(participant_id: str) -> None:
             logger.warning("recalculate_participant_portfolio: update failed for %s: %s", pid, e)
 
 
+def recalculate_all_participant_portfolios() -> int:
+    """
+    Run :func:`recalculate_participant_portfolio` for every participant (paginated).
+    """
+    p_col = camel_participant_pk_column()
+    n = 0
+    off = 0
+    _page = 1000
+    while True:
+        try:
+            res = (
+                supabase.table("participants")
+                .select(p_col)
+                .order(p_col)
+                .range(off, off + _page - 1)
+                .execute()
+            )
+        except APIError as e:
+            logger.warning("recalculate_all_participant_portfolios: list page %s: %s", off, e)
+            break
+        rows = list(res.data or [])
+        if not rows:
+            break
+        for r in rows:
+            pid = str(r.get(p_col) or "").strip()
+            if pid:
+                recalculate_participant_portfolio(pid)
+                n += 1
+        if len(rows) < _page:
+            break
+        off += _page
+    return n
+
+
 def recalc_from_investment_id(investment_id: str) -> None:
     try:
         r = (
