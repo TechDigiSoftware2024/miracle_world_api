@@ -11,6 +11,10 @@ from app.schemas.investment import (
     AdminInvestmentFundStatsItem,
     AdminInvestmentStatsResponse,
     InvestmentAdminCreate,
+    InvestmentBulkStatusUpdate,
+    InvestmentBulkStatusUpdateItem,
+    InvestmentBulkStatusUpdateFailedItem,
+    InvestmentBulkStatusUpdateResponse,
     InvestmentAdminUpdate,
     InvestmentResponse,
     InvestmentStatusUpdate,
@@ -74,6 +78,81 @@ def _row_inv_or_404(investment_id: str) -> dict:
             detail="Investment not found",
         )
     return result.data[0]
+
+
+def _patch_investment_status_internal(
+    investment_id: str,
+    row: dict,
+    *,
+    new_status: str,
+    investment_start: Optional[datetime],
+) -> InvestmentResponse:
+    old_status = row.get("status")
+    now = datetime.now(timezone.utc).isoformat()
+
+    if new_status == "Active":
+        start = investment_start
+        if start is None:
+            start = datetime.now(timezone.utc)
+        elif start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+        patch = {
+            "status": new_status,
+            "investmentStartDate": start.isoformat(),
+            "updatedAt": now,
+        }
+        merged = dict(row)
+        merged["monthlyPayout"] = float(merged.get("monthlyPayout") or 0)
+        merged["durationMonths"] = int(merged.get("durationMonths") or 0)
+        try:
+            next_iso = replace_payment_schedules(investment_id, merged, start)
+            patch["nextPayoutDate"] = next_iso
+            replace_partner_commission_schedules(investment_id, merged, start)
+        except APIError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=format_api_error(e),
+            ) from e
+    else:
+        patch = {"status": new_status, "updatedAt": now}
+        if (
+            str(old_status or "").strip() == "Active"
+            and str(new_status or "").strip() in ("Processing", "Pending Approval")
+        ):
+            try:
+                supabase.table(_PS).delete().eq("investmentId", investment_id).execute()
+                delete_partner_commission_schedules(investment_id)
+            except APIError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=format_api_error(e),
+                ) from e
+            patch["nextPayoutDate"] = None
+
+    try:
+        updated = (
+            supabase.table(_TABLE).update(patch).eq("investmentId", investment_id).execute()
+        )
+        out = updated.data[0] if updated.data else None
+        if not out:
+            refetch = (
+                supabase.table(_TABLE).select("*").eq("investmentId", investment_id).execute()
+            )
+            out = refetch.data[0] if refetch.data else None
+        if not out:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not read investment after update.",
+            )
+        recalc_from_investment_id(investment_id)
+        return InvestmentResponse.model_validate(out)
+    except HTTPException:
+        raise
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
 
 
 @router.get("", response_model=List[InvestmentResponse])
@@ -500,76 +579,66 @@ def admin_patch_investment_status(
     _: dict = Depends(require_role(["admin"])),
 ):
     row = _row_inv_or_404(investment_id)
-    old_status = row.get("status")
-    new_status = payload.status
-    now = datetime.now(timezone.utc).isoformat()
+    return _patch_investment_status_internal(
+        investment_id,
+        row,
+        new_status=payload.status,
+        investment_start=payload.investmentStartDate,
+    )
 
-    start = payload.investmentStartDate
-    if new_status == "Active":
-        if start is None:
-            start = datetime.now(timezone.utc)
-        elif start.tzinfo is None:
-            start = start.replace(tzinfo=timezone.utc)
-        patch = {
-            "status": new_status,
-            "investmentStartDate": start.isoformat(),
-            "updatedAt": now,
-        }
-        merged = dict(row)
-        merged["monthlyPayout"] = float(merged.get("monthlyPayout") or 0)
-        merged["durationMonths"] = int(merged.get("durationMonths") or 0)
+
+@router.patch("/status/bulk", response_model=InvestmentBulkStatusUpdateResponse)
+def admin_bulk_patch_investment_status(
+    payload: InvestmentBulkStatusUpdate,
+    _: dict = Depends(require_role(["admin"])),
+):
+    updated: list[InvestmentResponse] = []
+    failed: list[InvestmentBulkStatusUpdateFailedItem] = []
+
+    for item in payload.investments:
+        item: InvestmentBulkStatusUpdateItem
+        investment_id = str(item.investmentId or "").strip()
+        if not investment_id:
+            failed.append(
+                InvestmentBulkStatusUpdateFailedItem(
+                    investmentId="",
+                    error="Empty investmentId is not allowed",
+                )
+            )
+            continue
         try:
-            next_iso = replace_payment_schedules(investment_id, merged, start)
-            patch["nextPayoutDate"] = next_iso
-            replace_partner_commission_schedules(investment_id, merged, start)
-        except APIError as e:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=format_api_error(e),
-            ) from e
-    else:
-        patch = {"status": new_status, "updatedAt": now}
-        if (
-            str(old_status or "").strip() == "Active"
-            and str(new_status or "").strip() in ("Processing", "Pending Approval")
-        ):
-            try:
-                supabase.table(_PS).delete().eq("investmentId", investment_id).execute()
-                delete_partner_commission_schedules(investment_id)
-            except APIError as e:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=format_api_error(e),
-                ) from e
-            patch["nextPayoutDate"] = None
+            row = _row_inv_or_404(investment_id)
+            start = item.investmentStartDate
+            if payload.status == "Active" and start is None:
+                start = row.get("investmentDate")
+                if isinstance(start, str):
+                    start = datetime.fromisoformat(start.replace("Z", "+00:00"))
+            out = _patch_investment_status_internal(
+                investment_id,
+                row,
+                new_status=payload.status,
+                investment_start=start,
+            )
+            updated.append(out)
+        except Exception as exc:
+            if isinstance(exc, HTTPException):
+                detail = exc.detail
+                msg = detail if isinstance(detail, str) else str(detail)
+            else:
+                msg = str(exc)
+            failed.append(
+                InvestmentBulkStatusUpdateFailedItem(
+                    investmentId=investment_id,
+                    error=msg or "Failed to update investment status",
+                )
+            )
 
-    try:
-        updated = (
-            supabase.table(_TABLE)
-            .update(patch)
-            .eq("investmentId", investment_id)
-            .execute()
-        )
-        out = updated.data[0] if updated.data else None
-        if not out:
-            refetch = (
-                supabase.table(_TABLE).select("*").eq("investmentId", investment_id).execute()
-            )
-            out = refetch.data[0] if refetch.data else None
-        if not out:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Could not read investment after update.",
-            )
-        recalc_from_investment_id(investment_id)
-        return InvestmentResponse.model_validate(out)
-    except HTTPException:
-        raise
-    except APIError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=format_api_error(e),
-        ) from e
+    return InvestmentBulkStatusUpdateResponse(
+        totalRequested=len(payload.investments),
+        totalUpdated=len(updated),
+        updated=updated,
+        failed=failed,
+    )
 
 
 @router.delete("/{investment_id}")

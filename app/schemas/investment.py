@@ -90,6 +90,38 @@ class InvestmentStatusUpdate(BaseModel):
     )
 
 
+class InvestmentBulkStatusUpdateItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    investmentId: str = Field(min_length=1)
+    investmentStartDate: Optional[datetime] = Field(
+        default=None,
+        description=(
+            "Per-investment start date. "
+            "When status is Active and this is omitted, investmentDate is used."
+        ),
+    )
+
+
+class InvestmentBulkStatusUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    investments: list[InvestmentBulkStatusUpdateItem] = Field(min_length=1)
+    status: InvestmentStatus
+
+
+class InvestmentBulkStatusUpdateFailedItem(BaseModel):
+    investmentId: str
+    error: str
+
+
+class InvestmentBulkStatusUpdateResponse(BaseModel):
+    totalRequested: int
+    totalUpdated: int
+    updated: list[InvestmentResponse]
+    failed: list[InvestmentBulkStatusUpdateFailedItem]
+
+
 class InvestmentResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
