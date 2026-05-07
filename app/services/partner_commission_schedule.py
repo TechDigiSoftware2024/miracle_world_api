@@ -122,7 +122,7 @@ def commission_hops_for_agent(agent_id: str) -> list[dict[str, Any]]:
         })
 
     curr_row = row_agent
-    level = 1
+    payable_level = 1
     seen: set[str] = {aid}
 
     while True:
@@ -134,14 +134,14 @@ def commission_hops_for_agent(agent_id: str) -> list[dict[str, Any]]:
         if ic > 0:
             hops.append({
                 "beneficiaryPartnerId": parent_id,
-                "level": level,
+                "level": payable_level,
                 "ratePercent": ic,
             })
+            payable_level += 1
         next_row = _fetch_partner(parent_id, cache, pk_col)
         if not next_row:
             break
         curr_row = next_row
-        level += 1
 
     return hops
 
