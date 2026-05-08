@@ -17,13 +17,8 @@ logger = logging.getLogger(__name__)
 
 _INVEST = "investments"
 
-# Principal counted toward participantInvestedTotal / introducer % base
-_PRINCIPAL_STATUSES = frozenset(
-    ("Active", "Matured", "Completed", "Pending Approval"),
-)
-
-# Deals counted for totalDeals (activated / closed pipeline only)
-_DEAL_COUNT_STATUSES = frozenset(("Active", "Matured", "Completed"))
+# Partner portfolio metrics are derived only from active deals.
+_ACTIVE_INVESTMENT_STATUS = "Active"
 
 # PostgREST often caps responses (~1000 rows); paginate so totals are complete.
 _PAGE = 1000
@@ -45,7 +40,7 @@ def _fetch_all_commission_lines_for_beneficiary(partner_id: str) -> list[dict]:
         try:
             res = (
                 supabase.table("partner_commission_schedules")
-                .select("amount,status,level,payoutDate")
+                .select("investmentId,amount,status,level,payoutDate")
                 .eq("beneficiaryPartnerId", pid)
                 .order("id")
                 .range(off, off + _PAGE - 1)
@@ -61,6 +56,45 @@ def _fetch_all_commission_lines_for_beneficiary(partner_id: str) -> list[dict]:
         if len(chunk) < _PAGE:
             break
         off += _PAGE
+    return out
+
+
+def _fetch_active_investment_ids(investment_ids: list[str]) -> set[str]:
+    """
+    Return subset of ids currently in Active status.
+    """
+    ids = [str(x).strip() for x in investment_ids if str(x).strip()]
+    if not ids:
+        return set()
+    out: set[str] = set()
+    chunk_size = 80
+    for i in range(0, len(ids), chunk_size):
+        batch = ids[i : i + chunk_size]
+        off = 0
+        while True:
+            try:
+                res = (
+                    supabase.table(_INVEST)
+                    .select("investmentId")
+                    .in_("investmentId", batch)
+                    .eq("status", _ACTIVE_INVESTMENT_STATUS)
+                    .order("investmentId")
+                    .range(off, off + _PAGE - 1)
+                    .execute()
+                )
+            except APIError as e:
+                logger.warning("active investment id batch page %s: %s", off, e)
+                break
+            chunk = list(res.data or [])
+            if not chunk:
+                break
+            for r in chunk:
+                iid = str(r.get("investmentId") or "").strip()
+                if iid:
+                    out.add(iid)
+            if len(chunk) < _PAGE:
+                break
+            off += _PAGE
     return out
 
 
@@ -93,13 +127,12 @@ def _fetch_all_investments_as_agent(partner_id: str) -> list[dict]:
 
 
 def _sum_principal_for_agent_ids(agent_ids: list[str]) -> float:
-    """Sum ``investedAmount`` for investments whose agent is in ``agent_ids`` and status qualifies."""
+    """Sum ``investedAmount`` for active investments whose agent is in ``agent_ids``."""
     ids = [str(x).strip() for x in agent_ids if str(x).strip()]
     if not ids:
         return 0.0
     total = 0.0
     chunk_size = 80
-    st_list = list(_PRINCIPAL_STATUSES)
     for i in range(0, len(ids), chunk_size):
         batch = ids[i : i + chunk_size]
         off = 0
@@ -109,7 +142,7 @@ def _sum_principal_for_agent_ids(agent_ids: list[str]) -> float:
                     supabase.table(_INVEST)
                     .select("investedAmount")
                     .in_("agentId", batch)
-                    .in_("status", st_list)
+                    .eq("status", _ACTIVE_INVESTMENT_STATUS)
                     .order("investmentId")
                     .range(off, off + _PAGE - 1)
                     .execute()
@@ -200,9 +233,10 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
     - **portfolioAmount** / **paidAmount**: total **paid** commission (self + team) for this partner.
     - **selfEarningAmount**: **paid** rows with **level 0** (direct agent on the deal).
     - **teamEarningAmount**: **paid** rows with **level ≥ 1** (team / upline paid to this partner).
-    - **pendingAmount**: sum of **pending** + **due** accruals not yet paid.
-    - **upcomingNetNextMonthPayment**: **pending** + **due** with ``payoutDate`` in the **next** UTC month.
-    - **totalBusiness**: sum of **investedAmount** (qualifying statuses) for investments where **agentId** is
+    - **pendingAmount**: sum of **pending** + **due** accruals on active investments only.
+    - **upcomingNetNextMonthPayment**: **pending** + **due** with ``payoutDate`` in the **next** UTC month
+      on active investments only.
+    - **totalBusiness**: sum of **investedAmount** on active investments where **agentId** is
       this partner or any partner in their downline introducer tree (group book).
     """
     pid = str(partner_id or "").strip()
@@ -219,13 +253,13 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
         if not iid:
             continue
         st = str(r.get("status") or "").strip()
-        if st in _PRINCIPAL_STATUSES:
+        if st == _ACTIVE_INVESTMENT_STATUS:
             participant_invested += _f(r.get("investedAmount"))
 
     total_deals = sum(
         1
         for r in invs
-        if str(r.get("status") or "").strip() in _DEAL_COUNT_STATUSES
+        if str(r.get("status") or "").strip() == _ACTIVE_INVESTMENT_STATUS
     )
 
     total_team_members = count_downline_partners(pid)
@@ -239,7 +273,14 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
     nm_lo, nm_hi = next_month_bounds_utc()
     upcoming_next_month = 0.0
     commission_rows = _fetch_all_commission_lines_for_beneficiary(pid)
+    commission_investment_ids = [
+        str(row.get("investmentId") or "").strip() for row in commission_rows
+    ]
+    active_commission_investments = _fetch_active_investment_ids(commission_investment_ids)
     for row in commission_rows:
+        iid = str(row.get("investmentId") or "").strip()
+        if not iid or iid not in active_commission_investments:
+            continue
         st = str(row.get("status") or "").strip()
         if st not in ("pending", "due", "paid"):
             continue
