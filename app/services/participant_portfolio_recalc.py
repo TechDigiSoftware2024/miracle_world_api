@@ -19,7 +19,10 @@ from typing import Any, Optional
 from postgrest.exceptions import APIError
 
 from app.db.database import supabase
-from app.services.partner_portfolio_recalc import recalculate_partner_portfolio
+from app.services.partner_portfolio_recalc import (
+    recalculate_partner_portfolio,
+    recalculate_partner_upline_chain,
+)
 from app.utils.db_column_names import camel_participant_pk_column
 from app.utils.portfolio_calendar import next_month_bounds_utc, parse_timestamptz
 
@@ -255,7 +258,9 @@ def recalc_from_investment_id(investment_id: str) -> None:
         recalculate_participant_portfolio(pid)
     aid = str(row.get("agentId") or "").strip()
     if aid:
-        recalculate_partner_portfolio(aid)
+        # Investment changes affect direct agent and all introducers above them for
+        # portfolio/reward progress (team business and reward achievements).
+        recalculate_partner_upline_chain(aid)
 
     try:
         bc = (

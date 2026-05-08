@@ -17,8 +17,13 @@ logger = logging.getLogger(__name__)
 
 _INVEST = "investments"
 
-# Partner portfolio metrics are derived only from active deals.
-_ACTIVE_INVESTMENT_STATUS = "Active"
+# Partner progress metrics should include all qualifying deal statuses (see PartnerResponse docs).
+_QUALIFYING_INVESTMENT_STATUSES = (
+    "Active",
+    "Matured",
+    "Completed",
+    "Pending Approval",
+)
 
 # PostgREST often caps responses (~1000 rows); paginate so totals are complete.
 _PAGE = 1000
@@ -77,7 +82,7 @@ def _fetch_active_investment_ids(investment_ids: list[str]) -> set[str]:
                     supabase.table(_INVEST)
                     .select("investmentId")
                     .in_("investmentId", batch)
-                    .eq("status", _ACTIVE_INVESTMENT_STATUS)
+                    .eq("status", "Active")
                     .order("investmentId")
                     .range(off, off + _PAGE - 1)
                     .execute()
@@ -127,7 +132,7 @@ def _fetch_all_investments_as_agent(partner_id: str) -> list[dict]:
 
 
 def _sum_principal_for_agent_ids(agent_ids: list[str]) -> float:
-    """Sum ``investedAmount`` for active investments whose agent is in ``agent_ids``."""
+    """Sum ``investedAmount`` for qualifying investments whose agent is in ``agent_ids``."""
     ids = [str(x).strip() for x in agent_ids if str(x).strip()]
     if not ids:
         return 0.0
@@ -142,7 +147,7 @@ def _sum_principal_for_agent_ids(agent_ids: list[str]) -> float:
                     supabase.table(_INVEST)
                     .select("investedAmount")
                     .in_("agentId", batch)
-                    .eq("status", _ACTIVE_INVESTMENT_STATUS)
+                    .in_("status", list(_QUALIFYING_INVESTMENT_STATUSES))
                     .order("investmentId")
                     .range(off, off + _PAGE - 1)
                     .execute()
@@ -253,13 +258,13 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
         if not iid:
             continue
         st = str(r.get("status") or "").strip()
-        if st == _ACTIVE_INVESTMENT_STATUS:
+        if st in _QUALIFYING_INVESTMENT_STATUSES:
             participant_invested += _f(r.get("investedAmount"))
 
     total_deals = sum(
         1
         for r in invs
-        if str(r.get("status") or "").strip() == _ACTIVE_INVESTMENT_STATUS
+        if str(r.get("status") or "").strip() in _QUALIFYING_INVESTMENT_STATUSES
     )
 
     total_team_members = count_downline_partners(pid)
@@ -341,3 +346,18 @@ def recalculate_partner_portfolio(partner_id: str) -> None:
             )
         else:
             logger.warning("recalculate_partner_portfolio: update failed for %s: %s", pid, e)
+
+    # Keep partner reward progress table fresh automatically whenever portfolio is recalculated.
+    # This removes dependency on manual admin recompute for common investment/commission flows.
+    try:
+        from app.services.reward_achievement_compute import (
+            recompute_partner_reward_achievements,
+        )
+
+        recompute_partner_reward_achievements(pid)
+    except Exception as e:
+        logger.warning(
+            "recalculate_partner_portfolio: reward achievements recompute skipped for %s: %s",
+            pid,
+            e,
+        )
