@@ -258,6 +258,106 @@ def compute_progress_for_partner_program(program: dict, partner_id: str) -> list
     return out
 
 
+def list_active_non_expired_programs(now: Optional[datetime] = None) -> list[dict]:
+    """
+    Active reward programs that are still valid as of ``now``.
+    Programs past ``endDate`` are excluded.
+    """
+    n = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    try:
+        res = (
+            supabase.table(_TABLE_PROG)
+            .select("*")
+            .eq("isActive", True)
+            .gte("endDate", n.isoformat())
+            .order("goalAmountValue")
+            .execute()
+        )
+    except APIError:
+        return []
+    return list(res.data or [])
+
+
+def upsert_partner_achievement_rows_for_program(program: dict, partner_id: str) -> int:
+    """
+    Compute and persist all achievement slices for one (program, partner) pair.
+    Existing rows for this pair are replaced.
+    """
+    pid = str(partner_id or "").strip()
+    if not pid:
+        return 0
+    prog_id = int(program.get("id") or 0)
+    if prog_id <= 0:
+        return 0
+    rows = compute_progress_for_partner_program(program, pid)
+    if not rows:
+        return 0
+    now = datetime.now(timezone.utc).isoformat()
+    db_rows: list[dict[str, Any]] = []
+    for r in rows:
+        db_rows.append({
+            **r,
+            "programId": prog_id,
+            "partnerId": pid,
+            "computedAt": now,
+        })
+    try:
+        supabase.table(_TABLE_ACH).delete().eq("programId", prog_id).eq("partnerId", pid).execute()
+        supabase.table(_TABLE_ACH).insert(db_rows).execute()
+    except APIError:
+        return 0
+    return len(db_rows)
+
+
+def initialize_partner_reward_achievements(partner_id: str) -> int:
+    """
+    Seed persisted reward achievements for a newly created partner across all
+    currently active/non-expired programs.
+    """
+    pid = str(partner_id or "").strip()
+    if not pid:
+        return 0
+    programs = list_active_non_expired_programs()
+    written = 0
+    for p in programs:
+        written += upsert_partner_achievement_rows_for_program(p, pid)
+    return written
+
+
+def recompute_partner_reward_achievements(partner_id: str) -> int:
+    """
+    Recompute persisted achievement rows for one partner across all active/non-expired programs.
+    """
+    return initialize_partner_reward_achievements(partner_id)
+
+
+def fetch_partner_achievement_rows(partner_id: str, program_ids: list[int]) -> dict[int, list[dict]]:
+    """
+    Read persisted achievement rows grouped by programId for one partner.
+    """
+    pid = str(partner_id or "").strip()
+    ids = [int(x) for x in program_ids if int(x) > 0]
+    if not pid or not ids:
+        return {}
+    out: dict[int, list[dict]] = {}
+    try:
+        res = (
+            supabase.table(_TABLE_ACH)
+            .select("*")
+            .eq("partnerId", pid)
+            .in_("programId", ids)
+            .order("periodEnd")
+            .execute()
+        )
+    except APIError:
+        return {}
+    for r in res.data or []:
+        pg = int(r.get("programId") or 0)
+        if pg > 0:
+            out.setdefault(pg, []).append(r)
+    return out
+
+
 def _prev_achieved_at_iso(prev_r: dict) -> Optional[str]:
     v = prev_r.get("achievedAt")
     if v is None:

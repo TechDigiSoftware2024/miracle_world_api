@@ -19,6 +19,9 @@ from app.schemas.partner import (
     SetChildSelfCommissionRequest,
 )
 from app.schemas.reward_program import (
+    PartnerRewardProgramCard,
+    PartnerRewardProgramsResponse,
+    PartnerRewardProgramsSummary,
     RewardOfferResponse,
     RewardProgramProgress,
     RewardProgramResponse,
@@ -26,6 +29,13 @@ from app.schemas.reward_program import (
 )
 from app.services.partner_portfolio_recalc import recalculate_partner_portfolio
 from app.services.reward_achievement_compute import compute_progress_for_partner_program
+from app.services.reward_achievement_compute import (
+    fetch_partner_achievement_rows,
+    goal_amount_rupees,
+    list_active_non_expired_programs,
+    qualifying_amount,
+    recompute_partner_reward_achievements,
+)
 from app.utils.db_column_names import camel_partner_pk_column
 from app.utils.partner_child_commission import child_commission_fields_or_error
 from app.utils.partner_commission import sync_children_introducer_commission_rates
@@ -65,6 +75,22 @@ def _list_active_reward_program_rows() -> list[dict]:
         .execute()
     )
     return res.data or []
+
+
+def _program_sort_key(row: dict) -> tuple[str, str, float, int]:
+    return (
+        str(row.get("programType") or "").upper(),
+        str(row.get("businessType") or "ALL").upper() or "ALL",
+        float(row.get("goalAmountValue") or 0),
+        int(row.get("id") or 0),
+    )
+
+
+def _program_track_key(row: dict) -> tuple[str, str]:
+    return (
+        str(row.get("programType") or "").upper(),
+        str(row.get("businessType") or "ALL").upper() or "ALL",
+    )
 
 
 def _row_to_account_basic(row: dict) -> PartnerAccountBasicResponse:
@@ -519,3 +545,137 @@ def partner_list_active_reward_programs(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=format_api_error(e),
         ) from e
+
+
+@router.get(
+    "/reward-programs/progress",
+    response_model=PartnerRewardProgramsResponse,
+    summary="Partner reward levels with lock/unlock state and totals",
+)
+def partner_reward_programs_progress(
+    refresh: bool = Query(
+        True,
+        description="When true, recompute and persist partner achievements before response.",
+    ),
+    current_user: dict = Depends(require_role(["partner"])),
+):
+    uid = str(current_user.get("userId", "")).strip()
+    if not uid:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token is missing userId",
+        )
+
+    if refresh:
+        try:
+            recompute_partner_reward_achievements(uid)
+        except Exception:
+            pass
+
+    now = datetime.now(timezone.utc)
+    programs = list_active_non_expired_programs(now)
+    if not programs:
+        return PartnerRewardProgramsResponse(
+            partnerId=uid,
+            generatedAt=now,
+            summary=PartnerRewardProgramsSummary(),
+            programs=[],
+        )
+
+    program_ids = [int(p.get("id") or 0) for p in programs if int(p.get("id") or 0) > 0]
+    rows_by_program = fetch_partner_achievement_rows(uid, program_ids)
+
+    try:
+        offers_raw = (
+            supabase.table("reward_offers")
+            .select("*")
+            .in_("programId", program_ids)
+            .order("createdAt", desc=True)
+            .execute()
+        ).data or []
+    except APIError:
+        offers_raw = []
+    offers_by_program: dict[int, list[RewardOfferResponse]] = {}
+    for o in offers_raw:
+        pid = int(o.get("programId") or 0)
+        if pid > 0:
+            offers_by_program.setdefault(pid, []).append(RewardOfferResponse.model_validate(o))
+
+    grouped: dict[tuple[str, str], list[dict]] = {}
+    for p in sorted(programs, key=_program_sort_key):
+        grouped.setdefault(_program_track_key(p), []).append(p)
+
+    cards: list[PartnerRewardProgramCard] = []
+    for _, plist in grouped.items():
+        previous_achieved = True
+        for p in plist:
+            pid = int(p.get("id") or 0)
+            prog_rows = rows_by_program.get(pid, [])
+            latest = prog_rows[-1] if prog_rows else None
+            latest_direct = float((latest or {}).get("directPaidInPeriod") or 0)
+            latest_team = float((latest or {}).get("teamPaidInPeriod") or 0)
+            g_rupees = goal_amount_rupees(
+                float(p.get("goalAmountValue") or 0),
+                str(p.get("goalAmountUnit") or "LAKH"),
+            )
+            eligible = qualifying_amount(latest_direct, latest_team, p.get("businessType"))
+            remaining = max(0.0, round(g_rupees - eligible, 2))
+            progress = 0.0 if g_rupees <= 0 else min(100.0, round((eligible / g_rupees) * 100.0, 2))
+            achieved_row = next((r for r in prog_rows if bool(r.get("goalReached"))), None)
+            is_achieved = achieved_row is not None
+            is_current = (not is_achieved) and previous_achieved
+            is_locked = not is_achieved and (not previous_achieved)
+            previous_achieved = previous_achieved and is_achieved
+            end_dt = p.get("endDate")
+            is_expired = False
+            try:
+                is_expired = bool(end_dt) and (datetime.fromisoformat(str(end_dt).replace("Z", "+00:00")) < now)
+            except (TypeError, ValueError):
+                is_expired = False
+            ach_at_raw = (achieved_row or {}).get("achievedAt")
+            ach_at = None
+            if ach_at_raw is not None:
+                try:
+                    ach_at = datetime.fromisoformat(str(ach_at_raw).replace("Z", "+00:00"))
+                except ValueError:
+                    ach_at = None
+
+            cards.append(
+                PartnerRewardProgramCard(
+                    program=RewardProgramResponse.model_validate(p),
+                    offers=offers_by_program.get(pid, []),
+                    isAchieved=is_achieved,
+                    isCurrent=is_current,
+                    isLocked=is_locked,
+                    isExpired=is_expired,
+                    goalAmountRupees=g_rupees,
+                    directAmount=round(latest_direct, 2),
+                    teamAmount=round(latest_team, 2),
+                    eligibleAmount=round(eligible, 2),
+                    remainingAmount=round(remaining, 2),
+                    progressPercent=progress,
+                    achievedAt=ach_at,
+                    latestPeriodKey=str((latest or {}).get("periodKey") or ""),
+                    latestPeriodStart=(latest or {}).get("periodStart"),
+                    latestPeriodEnd=(latest or {}).get("periodEnd"),
+                )
+            )
+
+    summary = PartnerRewardProgramsSummary(
+        totalPrograms=len(cards),
+        achievedPrograms=sum(1 for c in cards if c.isAchieved),
+        unlockedPrograms=sum(1 for c in cards if (not c.isLocked)),
+        lockedPrograms=sum(1 for c in cards if c.isLocked),
+        expiredPrograms=sum(1 for c in cards if c.isExpired),
+        totalGoalAmountRupees=round(sum(c.goalAmountRupees for c in cards), 2),
+        totalEligibleAmount=round(sum(c.eligibleAmount for c in cards), 2),
+        totalDirectAmount=round(sum(c.directAmount for c in cards), 2),
+        totalTeamAmount=round(sum(c.teamAmount for c in cards), 2),
+        totalRewardAmount=round(sum(c.eligibleAmount for c in cards if c.isAchieved), 2),
+    )
+    return PartnerRewardProgramsResponse(
+        partnerId=uid,
+        generatedAt=now,
+        summary=summary,
+        programs=cards,
+    )

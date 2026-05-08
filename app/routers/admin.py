@@ -46,6 +46,7 @@ from app.utils.partner_commission import (
     sync_all_children_introducer_commission_rates,
     sync_children_introducer_commission_rates,
 )
+from app.services.reward_achievement_compute import initialize_partner_reward_achievements
 from app.utils.partner_team import team_tree_for_partner
 from app.utils.participant_fund_types import enrich_participant_row_with_special_fund_ids
 from app.utils.supabase_columns import (
@@ -1349,6 +1350,10 @@ def approve_request(
             except APIError:
                 pass
             recalculate_partner_upline_chain(cid)
+            try:
+                initialize_partner_reward_achievements(cid)
+            except Exception:
+                pass
 
         else:
             raise HTTPException(

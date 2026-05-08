@@ -188,3 +188,48 @@ class RewardAchievementAdminRow(BaseModel):
 class RewardAchievementRecomputeResponse(BaseModel):
     programId: int
     rowsWritten: int
+
+
+class PartnerRewardProgramCard(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    program: RewardProgramResponse
+    offers: list[RewardOfferResponse] = Field(default_factory=list)
+    isAchieved: bool = False
+    isCurrent: bool = False
+    isLocked: bool = True
+    isExpired: bool = False
+    goalAmountRupees: float = 0.0
+    directAmount: float = 0.0
+    teamAmount: float = 0.0
+    eligibleAmount: float = 0.0
+    remainingAmount: float = 0.0
+    progressPercent: float = 0.0
+    achievedAt: Optional[datetime] = None
+    latestPeriodKey: str = ""
+    latestPeriodStart: Optional[datetime] = None
+    latestPeriodEnd: Optional[datetime] = None
+
+
+class PartnerRewardProgramsSummary(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    totalPrograms: int = 0
+    achievedPrograms: int = 0
+    unlockedPrograms: int = 0
+    lockedPrograms: int = 0
+    expiredPrograms: int = 0
+    totalGoalAmountRupees: float = 0.0
+    totalEligibleAmount: float = 0.0
+    totalDirectAmount: float = 0.0
+    totalTeamAmount: float = 0.0
+    totalRewardAmount: float = 0.0
+
+
+class PartnerRewardProgramsResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    partnerId: str
+    generatedAt: datetime
+    summary: PartnerRewardProgramsSummary
+    programs: list[PartnerRewardProgramCard] = Field(default_factory=list)
