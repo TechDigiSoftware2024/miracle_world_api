@@ -115,13 +115,6 @@ class InvestmentBulkStatusUpdateFailedItem(BaseModel):
     error: str
 
 
-class InvestmentBulkStatusUpdateResponse(BaseModel):
-    totalRequested: int
-    totalUpdated: int
-    updated: list["InvestmentResponse"]
-    failed: list[InvestmentBulkStatusUpdateFailedItem]
-
-
 class InvestmentResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
@@ -167,6 +160,13 @@ class InvestmentResponse(BaseModel):
     updatedAt: Optional[datetime] = Field(
         default=None, validation_alias=AliasChoices("updatedAt", "updated_at")
     )
+
+
+class InvestmentBulkStatusUpdateResponse(BaseModel):
+    totalRequested: int
+    totalUpdated: int
+    updated: list[InvestmentResponse]
+    failed: list[InvestmentBulkStatusUpdateFailedItem]
 
 
 class PaymentScheduleResponse(BaseModel):
