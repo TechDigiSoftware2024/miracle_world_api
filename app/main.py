@@ -3,6 +3,7 @@ from typing import Optional
 
 import httpx
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from postgrest.exceptions import APIError
 
 from app.core.config import SUPABASE_KEY, SUPABASE_URL
@@ -64,6 +65,11 @@ app = FastAPI(
     version="0.1.0",
     description=API_DESCRIPTION,
     swagger_ui_parameters={"persistAuthorization": True},
+)
+app.mount(
+    "/profile_images",
+    StaticFiles(directory="/var/www/miracleworldupload/profile_images"),
+    name="profile_images",
 )
 
 
