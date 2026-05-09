@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials
 from postgrest.exceptions import APIError
 
@@ -41,6 +41,7 @@ from app.utils.partner_child_commission import child_commission_fields_or_error
 from app.utils.partner_commission import sync_children_introducer_commission_rates
 from app.utils.partner_team import team_tree_for_partner
 from app.utils.patch_payload import dump_update_or_400
+from app.utils.file_uploads import save_upload_file
 from app.utils.supabase_errors import format_api_error
 
 router = APIRouter(prefix="/partner", tags=["Partner"])
@@ -271,6 +272,43 @@ def patch_partner_profile(
             )
             if again.data:
                 row = again.data[0]
+        return _row_to_account_basic(row)
+    except HTTPException:
+        raise
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+
+
+@router.post("/profile-image/upload", response_model=PartnerAccountBasicResponse)
+def partner_upload_profile_image(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(require_role(["partner"])),
+):
+    stored_path = save_upload_file(file, "profile_images")
+    try:
+        updated = (
+            supabase.table("partners")
+            .update({"profileImage": stored_path})
+            .eq("phone", current_user["sub"])
+            .execute()
+        )
+        row = updated.data[0] if updated.data else None
+        if not row:
+            refetch = (
+                supabase.table("partners")
+                .select("*")
+                .eq("phone", current_user["sub"])
+                .execute()
+            )
+            row = refetch.data[0] if refetch.data else None
+        if not row:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Partner not found",
+            )
         return _row_to_account_basic(row)
     except HTTPException:
         raise

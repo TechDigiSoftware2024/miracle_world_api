@@ -31,3 +31,9 @@ SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "true").strip().lower() in ("1", "true"
 MSG91_AUTH_KEY = os.getenv("MSG91_AUTH_KEY", "")
 MSG91_TEMPLATE_ID = os.getenv("MSG91_TEMPLATE_ID", "")
 MSG91_BASE_URL = os.getenv("MSG91_BASE_URL", "https://control.msg91.com/api/v5")
+
+# Local upload storage (server filesystem)
+MIRACLE_WORLD_UPLOAD_ROOT = os.getenv(
+    "MIRACLE_WORLD_UPLOAD_ROOT",
+    "/var/www/miracleworldupload",
+)

@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from postgrest.exceptions import APIError
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
@@ -38,6 +38,7 @@ from app.services.participant_portfolio_recalc import (
     recalc_from_investment_id,
 )
 from app.utils.patch_payload import dump_update_or_400
+from app.utils.file_uploads import save_upload_file
 from app.utils.supabase_errors import format_api_error
 
 router = APIRouter(prefix="/investments", tags=["Admin", "Investments"])
@@ -563,6 +564,48 @@ def admin_patch_investment(
         if old_agent and old_agent != new_agent:
             recalculate_partner_portfolio(old_agent)
         return InvestmentResponse.model_validate(row)
+    except HTTPException:
+        raise
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+
+
+@router.post("/{investment_id}/document/upload", response_model=InvestmentResponse)
+def admin_upload_investment_doc(
+    investment_id: str,
+    file: UploadFile = File(...),
+    _: dict = Depends(require_role(["admin"])),
+):
+    row = _row_inv_or_404(investment_id)
+    stored_path = save_upload_file(file, "imvestment_docs")
+    now = datetime.now(timezone.utc).isoformat()
+    patch: dict = {"investmentDoc": stored_path, "updatedAt": now}
+    if str(row.get("status", "")).strip() == "Processing":
+        patch["status"] = "Pending Approval"
+
+    try:
+        updated = (
+            supabase.table(_TABLE)
+            .update(patch)
+            .eq("investmentId", investment_id)
+            .execute()
+        )
+        out = updated.data[0] if updated.data else None
+        if not out:
+            refetch = (
+                supabase.table(_TABLE).select("*").eq("investmentId", investment_id).execute()
+            )
+            out = refetch.data[0] if refetch.data else None
+        if not out:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not read investment after document upload.",
+            )
+        recalc_from_investment_id(investment_id)
+        return InvestmentResponse.model_validate(out)
     except HTTPException:
         raise
     except APIError as e:

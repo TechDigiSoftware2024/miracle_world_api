@@ -1,6 +1,6 @@
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials
 from postgrest.exceptions import APIError
 
@@ -26,6 +26,7 @@ from app.utils.participant_fund_types import (
     fetch_visible_fund_type_rows,
 )
 from app.utils.phone_normalize import is_plausible_in_mobile, normalize_phone_digits
+from app.utils.file_uploads import save_upload_file
 from app.utils.supabase_errors import format_api_error
 
 router = APIRouter(prefix="/participant", tags=["Participant"])
@@ -120,6 +121,46 @@ def patch_participant_profile(
         updated = (
             supabase.table("participants")
             .update(data)
+            .eq("phone", current_user["sub"])
+            .execute()
+        )
+        row = updated.data[0] if updated.data else None
+        if not row:
+            refetch = (
+                supabase.table("participants")
+                .select("*")
+                .eq("phone", current_user["sub"])
+                .execute()
+            )
+            row = refetch.data[0] if refetch.data else None
+        if not row:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Participant not found",
+            )
+        uid = str(current_user.get("userId", "")).strip()
+        return ParticipantResponse.model_validate(
+            enrich_participant_row_with_special_fund_ids(row, uid)
+        )
+    except HTTPException:
+        raise
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+
+
+@router.post("/profile-image/upload", response_model=ParticipantResponse)
+def upload_participant_profile_image(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(require_role(["participant"])),
+):
+    stored_path = save_upload_file(file, "profile_images")
+    try:
+        updated = (
+            supabase.table("participants")
+            .update({"profileImage": stored_path})
             .eq("phone", current_user["sub"])
             .execute()
         )

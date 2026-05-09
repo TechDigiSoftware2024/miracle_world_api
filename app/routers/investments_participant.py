@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from postgrest.exceptions import APIError
 
 from app.db.database import supabase
@@ -19,6 +19,7 @@ from app.services.participant_portfolio_recalc import (
 )
 from app.utils.investment_id import new_investment_id
 from app.utils.patch_payload import dump_update_or_400
+from app.utils.file_uploads import save_upload_file
 from app.utils.supabase_errors import format_api_error
 
 router = APIRouter(prefix="/investments", tags=["Participant", "Investments"])
@@ -177,6 +178,51 @@ def participant_patch_investment_doc(
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Could not read investment after update.",
+            )
+        recalc_from_investment_id(investment_id)
+        return InvestmentResponse.model_validate(out)
+    except HTTPException:
+        raise
+    except APIError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_api_error(e),
+        ) from e
+
+
+@router.post("/{investment_id}/document/upload", response_model=InvestmentResponse)
+def participant_upload_investment_doc(
+    investment_id: str,
+    file: UploadFile = File(...),
+    current_user: dict = Depends(require_role(["participant"])),
+):
+    row = _row_inv_or_404(investment_id)
+    if str(row.get("participantId", "")).strip() != str(current_user.get("userId", "")).strip():
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your investment")
+
+    stored_path = save_upload_file(file, "imvestment_docs")
+    now = datetime.now(timezone.utc).isoformat()
+    patch: dict = {"investmentDoc": stored_path, "updatedAt": now}
+    if str(row.get("status", "")).strip() == "Processing":
+        patch["status"] = "Pending Approval"
+
+    try:
+        updated = (
+            supabase.table(_TABLE)
+            .update(patch)
+            .eq("investmentId", investment_id)
+            .execute()
+        )
+        out = updated.data[0] if updated.data else None
+        if not out:
+            refetch = (
+                supabase.table(_TABLE).select("*").eq("investmentId", investment_id).execute()
+            )
+            out = refetch.data[0] if refetch.data else None
+        if not out:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not read investment after document upload.",
             )
         recalc_from_investment_id(investment_id)
         return InvestmentResponse.model_validate(out)

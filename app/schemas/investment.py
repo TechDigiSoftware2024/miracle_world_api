@@ -118,7 +118,7 @@ class InvestmentBulkStatusUpdateFailedItem(BaseModel):
 class InvestmentBulkStatusUpdateResponse(BaseModel):
     totalRequested: int
     totalUpdated: int
-    updated: list[InvestmentResponse]
+    updated: list["InvestmentResponse"]
     failed: list[InvestmentBulkStatusUpdateFailedItem]
 
 
