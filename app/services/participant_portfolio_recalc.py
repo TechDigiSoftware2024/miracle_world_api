@@ -19,11 +19,11 @@ from typing import Any, Optional
 from postgrest.exceptions import APIError
 
 from app.db.database import supabase
-from app.services.partner_portfolio_recalc import (
-    recalculate_partner_portfolio,
-    recalculate_partner_upline_chain,
+from app.services.partner_portfolio_recalc import recalculate_partner_portfolio
+from app.utils.db_column_names import (
+    camel_participant_pk_column,
+    camel_partner_pk_column,
 )
-from app.utils.db_column_names import camel_participant_pk_column
 from app.utils.portfolio_calendar import next_month_bounds_utc, parse_timestamptz
 
 logger = logging.getLogger(__name__)
@@ -34,6 +34,11 @@ _PAYOUTS = "payouts"
 _ACTIVE_STATUSES = frozenset(
     ("Processing", "Pending Approval", "Active", "Matured")
 )
+_IN_CHUNK = 80
+
+
+def _chunked(ids: list[str], size: int) -> list[list[str]]:
+    return [ids[i : i + size] for i in range(0, len(ids), size)]
 
 
 def _f(x: Any) -> float:
@@ -238,43 +243,93 @@ def recalculate_all_participant_portfolios() -> int:
     return n
 
 
-def recalc_from_investment_id(investment_id: str) -> None:
-    try:
-        r = (
-            supabase.table(_INVEST)
-            .select("participantId,agentId")
-            .eq("investmentId", investment_id)
-            .limit(1)
-            .execute()
+def recalc_from_investment_ids(investment_ids: list[str]) -> None:
+    """
+    Refresh participant + partner portfolio aggregates affected by these investments.
+
+    Batches DB reads and recalculates each participant / partner at most once, even when
+    multiple ``investment_ids`` share the same owner or upline.
+    """
+    ids = list(
+        dict.fromkeys(
+            str(x).strip() for x in investment_ids if x is not None and str(x).strip()
         )
-    except APIError as e:
-        logger.warning("recalc_from_investment_id: %s", e)
+    )
+    if not ids:
         return
-    if not r.data:
-        return
-    row = r.data[0]
-    pid = str(row.get("participantId") or "").strip()
-    if pid:
-        recalculate_participant_portfolio(pid)
-    aid = str(row.get("agentId") or "").strip()
-    if aid:
-        # Investment changes affect direct agent and all introducers above them for
-        # portfolio/reward progress (team business and reward achievements).
-        recalculate_partner_upline_chain(aid)
+
+    rows_by: dict[str, dict] = {}
+    for batch in _chunked(ids, _IN_CHUNK):
+        try:
+            r = (
+                supabase.table(_INVEST)
+                .select("investmentId,participantId,agentId")
+                .in_("investmentId", batch)
+                .execute()
+            )
+        except APIError as e:
+            logger.warning("recalc_from_investment_ids: investment batch: %s", e)
+            continue
+        for row in r.data or []:
+            iid = str(row.get("investmentId") or "").strip()
+            if iid:
+                rows_by[iid] = row
+
+    participants: set[str] = set()
+    agents: set[str] = set()
+    for iid in ids:
+        row = rows_by.get(iid)
+        if not row:
+            continue
+        pid = str(row.get("participantId") or "").strip()
+        if pid:
+            participants.add(pid)
+        aid = str(row.get("agentId") or "").strip()
+        if aid:
+            agents.add(aid)
+
+    pk_col = camel_partner_pk_column()
+    all_partner_ids: set[str] = set()
+    for aid in agents:
+        walk = aid
+        seen_chain: set[str] = set()
+        while walk and walk not in seen_chain:
+            seen_chain.add(walk)
+            all_partner_ids.add(walk)
+            try:
+                pr = (
+                    supabase.table("partners")
+                    .select("introducer")
+                    .eq(pk_col, walk)
+                    .limit(1)
+                    .execute()
+                )
+            except APIError:
+                break
+            if not pr.data:
+                break
+            walk = str(pr.data[0].get("introducer") or "").strip()
 
     try:
-        bc = (
-            supabase.table("partner_commission_schedules")
-            .select("beneficiaryPartnerId")
-            .eq("investmentId", investment_id)
-            .execute()
-        )
-        seen_b: set[str] = set()
-        for brow in bc.data or []:
-            bid = str(brow.get("beneficiaryPartnerId") or "").strip()
-            if not bid or bid in seen_b:
-                continue
-            seen_b.add(bid)
-            recalculate_partner_portfolio(bid)
+        for batch in _chunked(ids, _IN_CHUNK):
+            bc = (
+                supabase.table("partner_commission_schedules")
+                .select("beneficiaryPartnerId")
+                .in_("investmentId", batch)
+                .execute()
+            )
+            for brow in bc.data or []:
+                bid = str(brow.get("beneficiaryPartnerId") or "").strip()
+                if bid:
+                    all_partner_ids.add(bid)
     except APIError:
         pass
+
+    for pid in participants:
+        recalculate_participant_portfolio(pid)
+    for bid in all_partner_ids:
+        recalculate_partner_portfolio(bid)
+
+
+def recalc_from_investment_id(investment_id: str) -> None:
+    recalc_from_investment_ids([investment_id])

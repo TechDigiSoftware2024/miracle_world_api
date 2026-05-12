@@ -1,7 +1,16 @@
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 from postgrest.exceptions import APIError
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
@@ -36,6 +45,7 @@ from app.services.participant_portfolio_recalc import (
     recalculate_all_participant_portfolios,
     recalculate_participant_portfolio,
     recalc_from_investment_id,
+    recalc_from_investment_ids,
 )
 from app.utils.patch_payload import dump_update_or_400
 from app.utils.file_uploads import save_upload_file
@@ -87,6 +97,7 @@ def _patch_investment_status_internal(
     *,
     new_status: str,
     investment_start: Optional[datetime],
+    defer_portfolio_recalc: bool = False,
 ) -> InvestmentResponse:
     old_status = row.get("status")
     now = datetime.now(timezone.utc).isoformat()
@@ -106,9 +117,16 @@ def _patch_investment_status_internal(
         merged["monthlyPayout"] = float(merged.get("monthlyPayout") or 0)
         merged["durationMonths"] = int(merged.get("durationMonths") or 0)
         try:
-            next_iso = replace_payment_schedules(investment_id, merged, start)
+            next_iso, sched_rows = replace_payment_schedules(
+                investment_id, merged, start
+            )
             patch["nextPayoutDate"] = next_iso
-            replace_partner_commission_schedules(investment_id, merged, start)
+            replace_partner_commission_schedules(
+                investment_id,
+                merged,
+                start,
+                payment_schedule_rows=sched_rows,
+            )
         except APIError as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -145,7 +163,8 @@ def _patch_investment_status_internal(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Could not read investment after update.",
             )
-        recalc_from_investment_id(investment_id)
+        if not defer_portfolio_recalc:
+            recalc_from_investment_ids([investment_id])
         return InvestmentResponse.model_validate(out)
     except HTTPException:
         raise
@@ -619,24 +638,30 @@ def admin_upload_investment_doc(
 def admin_patch_investment_status(
     investment_id: str,
     payload: InvestmentStatusUpdate,
+    background_tasks: BackgroundTasks,
     _: dict = Depends(require_role(["admin"])),
 ):
     row = _row_inv_or_404(investment_id)
-    return _patch_investment_status_internal(
+    out = _patch_investment_status_internal(
         investment_id,
         row,
         new_status=payload.status,
         investment_start=payload.investmentStartDate,
+        defer_portfolio_recalc=True,
     )
+    background_tasks.add_task(recalc_from_investment_ids, [investment_id])
+    return out
 
 
 @router.patch("/status/bulk", response_model=InvestmentBulkStatusUpdateResponse)
 def admin_bulk_patch_investment_status(
     payload: InvestmentBulkStatusUpdate,
+    background_tasks: BackgroundTasks,
     _: dict = Depends(require_role(["admin"])),
 ):
     updated: list[InvestmentResponse] = []
     failed: list[InvestmentBulkStatusUpdateFailedItem] = []
+    activated_ids: list[str] = []
 
     for item in payload.investments:
         item: InvestmentBulkStatusUpdateItem
@@ -661,8 +686,10 @@ def admin_bulk_patch_investment_status(
                 row,
                 new_status=payload.status,
                 investment_start=start,
+                defer_portfolio_recalc=True,
             )
             updated.append(out)
+            activated_ids.append(investment_id)
         except Exception as exc:
             if isinstance(exc, HTTPException):
                 detail = exc.detail
@@ -675,6 +702,9 @@ def admin_bulk_patch_investment_status(
                     error=msg or "Failed to update investment status",
                 )
             )
+
+    if activated_ids:
+        background_tasks.add_task(recalc_from_investment_ids, activated_ids)
 
     return InvestmentBulkStatusUpdateResponse(
         totalRequested=len(payload.investments),

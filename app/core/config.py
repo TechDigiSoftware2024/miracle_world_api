@@ -1,7 +1,25 @@
-from dotenv import load_dotenv
 import os
+import platform
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 load_dotenv()
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _default_miracle_world_upload_root() -> str:
+    """
+    Production Linux default is under /var/www. On Windows that path usually does not exist,
+    so use a directory under the repo unless MIRACLE_WORLD_UPLOAD_ROOT is set in the environment.
+    """
+    explicit = (os.getenv("MIRACLE_WORLD_UPLOAD_ROOT") or "").strip()
+    if explicit:
+        return explicit
+    if platform.system() == "Windows":
+        return str(_REPO_ROOT / "miracleworld_upload")
+    return "/var/www/miracleworldupload"
 
 DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
@@ -33,7 +51,4 @@ MSG91_TEMPLATE_ID = os.getenv("MSG91_TEMPLATE_ID", "")
 MSG91_BASE_URL = os.getenv("MSG91_BASE_URL", "https://control.msg91.com/api/v5")
 
 # Local upload storage (server filesystem)
-MIRACLE_WORLD_UPLOAD_ROOT = os.getenv(
-    "MIRACLE_WORLD_UPLOAD_ROOT",
-    "/var/www/miracleworldupload",
-)
+MIRACLE_WORLD_UPLOAD_ROOT = _default_miracle_world_upload_root()

@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 from typing import Optional
 
 import httpx
@@ -6,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from postgrest.exceptions import APIError
 
-from app.core.config import SUPABASE_KEY, SUPABASE_URL
+from app.core.config import MIRACLE_WORLD_UPLOAD_ROOT, SUPABASE_KEY, SUPABASE_URL
 from app.db.database import supabase
 from app.utils.db_column_names import camel_participant_pk_column, camel_partner_pk_column
 
@@ -66,9 +67,11 @@ app = FastAPI(
     description=API_DESCRIPTION,
     swagger_ui_parameters={"persistAuthorization": True},
 )
+_profile_images_dir = Path(MIRACLE_WORLD_UPLOAD_ROOT) / "profile_images"
+_profile_images_dir.mkdir(parents=True, exist_ok=True)
 app.mount(
     "/profile_images",
-    StaticFiles(directory="/var/www/miracleworldupload/profile_images"),
+    StaticFiles(directory=str(_profile_images_dir)),
     name="profile_images",
 )
 

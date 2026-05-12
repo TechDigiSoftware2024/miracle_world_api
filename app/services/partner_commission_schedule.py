@@ -7,7 +7,6 @@ from typing import Any, Optional
 from postgrest.exceptions import APIError
 
 from app.db.database import supabase
-from app.services.participant_portfolio_recalc import recalc_from_investment_id
 from app.utils.db_column_names import camel_partner_pk_column
 from app.utils.investment_schedule import calculate_payment_schedule
 
@@ -150,12 +149,18 @@ def replace_partner_commission_schedules(
     investment_id: str,
     investment_row: dict,
     investment_start: datetime,
+    *,
+    payment_schedule_rows: Optional[list[dict[str, Any]]] = None,
 ) -> None:
     """
     Replace all commission lines for this investment: same months/payout dates as participant
     ``payment_schedules`` (including prorata first line and closing adjustment when activation is
     mid-month). Each line amount is ``investedAmount × ratePercent / 100`` scaled by
     ``participant_line_amount / monthlyPayout`` so partner accrual matches participant schedule math.
+
+    Pass ``payment_schedule_rows`` from :func:`replace_payment_schedules` to skip a duplicate
+    schedule calculation. Portfolio recalculation is left to the caller after the investment row
+    is persisted (so Active status and schedules stay consistent).
     """
     iid = str(investment_id or "").strip()
     if not iid:
@@ -168,14 +173,17 @@ def replace_partner_commission_schedules(
     invested = float(investment_row.get("investedAmount") or 0)
     agent_id = str(investment_row.get("agentId") or "").strip()
 
-    schedule_rows, _, _ = calculate_payment_schedule(investment_start, monthly, duration)
+    if payment_schedule_rows is not None:
+        schedule_rows = payment_schedule_rows
+    else:
+        schedule_rows, _, _ = calculate_payment_schedule(
+            investment_start, monthly, duration
+        )
     if not schedule_rows or invested <= 0:
-        recalc_from_investment_id(iid)
         return
 
     hops = commission_hops_for_agent(agent_id)
     if not hops:
-        recalc_from_investment_id(iid)
         return
 
     now = datetime.now(timezone.utc).isoformat()
@@ -213,7 +221,5 @@ def replace_partner_commission_schedules(
             })
 
     if not db_rows:
-        recalc_from_investment_id(iid)
         return
     supabase.table(_TABLE).insert(db_rows).execute()
-    recalc_from_investment_id(iid)

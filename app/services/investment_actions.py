@@ -1,6 +1,7 @@
 """Regenerate payment schedule rows when an investment becomes Active."""
 
 from datetime import datetime, timezone
+from typing import Any
 
 from postgrest.exceptions import APIError
 
@@ -62,9 +63,13 @@ def replace_payment_schedules(
     investment_id: str,
     investment_row: dict,
     investment_start: datetime,
-) -> str | None:
+) -> tuple[str | None, list[dict[str, Any]]]:
     """
-    Deletes existing schedule lines and inserts new ones. Returns nextPayoutDate ISO or None.
+    Deletes existing schedule lines and inserts new ones in a single request.
+
+    Returns ``(nextPayoutDate ISO or None, schedule_rows)`` where ``schedule_rows`` is the
+    in-memory schedule from :func:`calculate_payment_schedule` (reuse for partner commission
+    rows to avoid recalculating).
     """
     monthly = float(investment_row.get("monthlyPayout") or 0)
     duration = int(investment_row.get("durationMonths") or 0)
@@ -74,11 +79,12 @@ def replace_payment_schedules(
     except APIError:
         raise
     if not rows:
-        return None
+        return None, []
     now = datetime.now(timezone.utc).isoformat()
     db_rows = schedule_rows_to_db(investment_id, rows)
     for r in db_rows:
         r["createdAt"] = now
         r["updatedAt"] = None
-        supabase.table(_TABLE_PS).insert(r).execute()
-    return next_pd.isoformat() if next_pd else None
+    supabase.table(_TABLE_PS).insert(db_rows).execute()
+    next_iso = next_pd.isoformat() if next_pd else None
+    return next_iso, rows
