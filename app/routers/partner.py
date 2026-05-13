@@ -37,6 +37,7 @@ from app.services.reward_achievement_compute import (
     recompute_partner_reward_achievements,
 )
 from app.utils.db_column_names import camel_partner_pk_column
+from app.utils.phone_normalize import normalize_phone_digits
 from app.utils.partner_child_commission import child_commission_fields_or_error
 from app.utils.partner_commission import sync_children_introducer_commission_rates
 from app.utils.partner_team import team_tree_for_partner
@@ -108,18 +109,67 @@ def _row_to_account_basic(row: dict) -> PartnerAccountBasicResponse:
 
 
 def _partner_row_by_phone(sub: str) -> dict:
-    result = (
-        supabase.table("partners")
-        .select("*")
-        .eq("phone", sub)
-        .execute()
-    )
-    if not result.data:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Partner not found",
+    """Resolve partner row by JWT ``sub`` (phone). Tries normalized 10-digit India form then raw value."""
+    raw = str(sub or "").strip()
+    candidates: list[str] = []
+    d10 = normalize_phone_digits(raw)
+    if d10 and len(d10) == 10:
+        candidates.append(d10)
+    if raw and raw not in candidates:
+        candidates.append(raw)
+    for phone in candidates:
+        result = (
+            supabase.table("partners")
+            .select("*")
+            .eq("phone", phone)
+            .limit(1)
+            .execute()
         )
-    return result.data[0]
+        if result.data:
+            return result.data[0]
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Partner not found",
+    )
+
+
+def _partner_row_for_profile(current_user: dict) -> dict:
+    """
+    Row used for GET /partner/profile.
+
+    - ``partner`` role: lookup by phone (``sub``).
+    - ``participant`` role: if the same phone has a partner account, use that row (unified login
+      returns participant first; app can open partner profile without forcing swap-role first).
+    """
+    role = str(current_user.get("role") or "").strip().lower()
+    sub = str(current_user.get("sub") or "").strip()
+    if role == "partner":
+        return _partner_row_by_phone(sub)
+    if role == "participant":
+        d10 = normalize_phone_digits(sub)
+        for phone in ([d10] if d10 and len(d10) == 10 else []) + ([sub] if sub else []):
+            if not phone:
+                continue
+            res = (
+                supabase.table("partners")
+                .select("*")
+                .eq("phone", phone)
+                .limit(1)
+                .execute()
+            )
+            if res.data:
+                return res.data[0]
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "No partner account for this phone. Log in with a partner account, "
+                "or use POST /swap-role if you have both participant and partner on the same number."
+            ),
+        )
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="You do not have permission to access this resource",
+    )
 
 
 # ─── PUBLIC: Login ───────────────────────────────────────────────
@@ -193,12 +243,24 @@ def get_partner_account(
 @router.get(
     "/profile",
     response_model=PartnerProfileResponse,
-    summary="Full partner row with MLM/portfolio fields (recalculated on each request; mpin omitted)",
+    summary=(
+        "Full partner row with MLM/portfolio fields (mpin omitted). "
+        "Set recalculate=false to return stored aggregates faster and avoid 504s on slow networks; "
+        "default recalculate=true refresues portfolio + reward progress from source tables."
+    ),
 )
 def get_partner_profile(
-    current_user: dict = Depends(require_role(["partner"])),
+    recalculate: bool = Query(
+        True,
+        description=(
+            "When true (default), recomputes portfolio columns from investments and commission schedules "
+            "before returning. When false, returns the current partners row as stored (faster; use for "
+            "dashboard refresh if you recalculate elsewhere or accept slightly stale numbers)."
+        ),
+    ),
+    current_user: dict = Depends(require_role(["partner", "participant"])),
 ):
-    base = _partner_row_by_phone(current_user["sub"])
+    base = _partner_row_for_profile(current_user)
     uid = str(
         base.get("partnerId")
         or base.get("agentId")
@@ -210,7 +272,8 @@ def get_partner_profile(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Partner record is missing partnerId",
         )
-    recalculate_partner_portfolio(uid)
+    if recalculate:
+        recalculate_partner_portfolio(uid)
     prid = camel_partner_pk_column()
     try:
         result = (

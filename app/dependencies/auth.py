@@ -170,8 +170,9 @@ def require_role(allowed_roles: list):
         request: Request,
         current_user: dict = Depends(get_current_user),
     ):
-        user_role = current_user.get("role")
-        if user_role not in allowed_roles:
+        user_role = str(current_user.get("role") or "").strip().lower()
+        allowed_norm = [str(r).strip().lower() for r in allowed_roles]
+        if user_role not in allowed_norm:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You do not have permission to access this resource",
