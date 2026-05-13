@@ -19,11 +19,54 @@ from app.schemas.pending_payments_admin import (
 from app.utils.db_column_names import camel_participant_pk_column, camel_partner_pk_column
 
 _BATCH = 120
+_PAGE = 1000
 
 
 def _chunks(xs: list, n: int):
     for i in range(0, len(xs), n):
         yield xs[i : i + n]
+
+
+def _select_all_paged(table: str, *, select_cols: str = "*") -> list[dict]:
+    out: list[dict] = []
+    start = 0
+    while True:
+        end = start + _PAGE - 1
+        res = supabase.table(table).select(select_cols).range(start, end).execute()
+        rows = list(res.data or [])
+        out.extend(rows)
+        if len(rows) < _PAGE:
+            break
+        start += _PAGE
+    return out
+
+
+def _select_in_all_paged(
+    table: str,
+    in_col: str,
+    in_values: list[str],
+    *,
+    select_cols: str = "*",
+) -> list[dict]:
+    if not in_values:
+        return []
+    out: list[dict] = []
+    start = 0
+    while True:
+        end = start + _PAGE - 1
+        res = (
+            supabase.table(table)
+            .select(select_cols)
+            .in_(in_col, in_values)
+            .range(start, end)
+            .execute()
+        )
+        rows = list(res.data or [])
+        out.extend(rows)
+        if len(rows) < _PAGE:
+            break
+        start += _PAGE
+    return out
 
 
 def _date_key(iso_val: Any) -> str:
@@ -103,17 +146,20 @@ def query_pending_payments_rollup(
         collapse_partner = False
 
     try:
-        inv_q = supabase.table("investments").select(
-            "investmentId,participantId,agentId,fundId,fundName,status"
+        inv_rows = _select_all_paged(
+            "investments",
+            select_cols="investmentId,participantId,agentId,fundId,fundName,status",
         )
         if investment_status and str(investment_status).strip().lower() != "all":
-            inv_q = inv_q.eq("status", str(investment_status).strip())
-        inv_res = inv_q.execute()
+            st = str(investment_status).strip().lower()
+            inv_rows = [
+                r for r in inv_rows if str(r.get("status") or "").strip().lower() == st
+            ]
     except APIError:
-        inv_res = type("R", (), {"data": []})()
+        inv_rows = []
 
     inv_map: dict[str, dict] = {}
-    for r in inv_res.data or []:
+    for r in inv_rows:
         iid = str(r.get("investmentId") or "").strip()
         if iid:
             inv_map[iid] = r
@@ -143,14 +189,16 @@ def query_pending_payments_rollup(
         sched_rows: list[dict] = []
         for chunk in _chunks(inv_ids, _BATCH):
             try:
-                sr = (
-                    supabase.table("payment_schedules")
-                    .select("*")
-                    .in_("investmentId", chunk)
-                    .in_("status", ["pending", "due"])
-                    .execute()
+                srows = _select_in_all_paged(
+                    "payment_schedules", "investmentId", chunk, select_cols="*"
                 )
-                sched_rows.extend(sr.data or [])
+                sched_rows.extend(
+                    [
+                        r
+                        for r in srows
+                        if str(r.get("status") or "").strip().lower() in ("pending", "due")
+                    ]
+                )
             except APIError:
                 continue
 
@@ -195,14 +243,16 @@ def query_pending_payments_rollup(
         pc_rows: list[dict] = []
         for chunk in _chunks(inv_ids, _BATCH):
             try:
-                cr = (
-                    supabase.table("partner_commission_schedules")
-                    .select("*")
-                    .in_("investmentId", chunk)
-                    .in_("status", ["pending", "due"])
-                    .execute()
+                crows = _select_in_all_paged(
+                    "partner_commission_schedules", "investmentId", chunk, select_cols="*"
                 )
-                pc_rows.extend(cr.data or [])
+                pc_rows.extend(
+                    [
+                        r
+                        for r in crows
+                        if str(r.get("status") or "").strip().lower() in ("pending", "due")
+                    ]
+                )
             except APIError:
                 continue
 

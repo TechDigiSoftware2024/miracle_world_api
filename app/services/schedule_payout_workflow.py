@@ -29,6 +29,12 @@ def run_after_payment_schedule_row_saved(row: dict) -> None:
 
 def mark_payment_schedule_paid(schedule_id: int) -> dict:
     """Set payment_schedules row to paid and run full downstream sync."""
+    out, _ = mark_payment_schedule_paid_ex(schedule_id)
+    return out
+
+
+def mark_payment_schedule_paid_ex(schedule_id: int) -> tuple[dict, bool]:
+    """Set payment_schedules row to paid and return (row, changed_now)."""
     sid = int(schedule_id)
     try:
         cur = supabase.table(_PS).select("*").eq("id", sid).limit(1).execute()
@@ -39,7 +45,7 @@ def mark_payment_schedule_paid(schedule_id: int) -> dict:
     row = cur.data[0]
     st = str(row.get("status") or "").strip().lower()
     if st == "paid":
-        return row
+        return row, False
     now = datetime.now(timezone.utc).isoformat()
     try:
         updated = (
@@ -57,7 +63,7 @@ def mark_payment_schedule_paid(schedule_id: int) -> dict:
     if not out:
         raise ValueError("Could not read payment schedule after update")
     run_after_payment_schedule_row_saved(out)
-    return out
+    return out, True
 
 
 def mark_partner_commission_schedules_paid(commission_ids: list[int]) -> list[dict]:

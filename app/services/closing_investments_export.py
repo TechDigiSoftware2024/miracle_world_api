@@ -19,6 +19,7 @@ _BANK = "bank_details"
 _INV = "investments"
 _PS = "payment_schedules"
 _PC = "partner_commission_schedules"
+_PAGE = 1000
 
 
 def _f(x: Any) -> float:
@@ -206,6 +207,53 @@ def _chunks(xs: list, n: int):
         yield xs[i : i + n]
 
 
+def _select_all_paged(table: str, *, select_cols: str = "*") -> list[dict]:
+    out: list[dict] = []
+    start = 0
+    while True:
+        end = start + _PAGE - 1
+        res = (
+            supabase.table(table)
+            .select(select_cols)
+            .range(start, end)
+            .execute()
+        )
+        rows = list(res.data or [])
+        out.extend(rows)
+        if len(rows) < _PAGE:
+            break
+        start += _PAGE
+    return out
+
+
+def _select_in_all_paged(
+    table: str,
+    in_col: str,
+    in_values: list[str],
+    *,
+    select_cols: str = "*",
+) -> list[dict]:
+    if not in_values:
+        return []
+    out: list[dict] = []
+    start = 0
+    while True:
+        end = start + _PAGE - 1
+        res = (
+            supabase.table(table)
+            .select(select_cols)
+            .in_(in_col, in_values)
+            .range(start, end)
+            .execute()
+        )
+        rows = list(res.data or [])
+        out.extend(rows)
+        if len(rows) < _PAGE:
+            break
+        start += _PAGE
+    return out
+
+
 def _bank_export(uid: str, bank_by_uid: dict[str, dict]) -> dict[str, str]:
     r = bank_by_uid.get(str(uid).strip()) or {}
     return {
@@ -322,11 +370,13 @@ def build_closing_investments_export(
     agent_query = (agent_search or partner_name_contains or "").strip()
 
     try:
-        inv_res = supabase.table(_INV).select("*").in_("status", statuses).execute()
+        all_inv = _select_all_paged(_INV, select_cols="*")
     except APIError as e:
         raise ValueError(str(e)) from e
-
-    investments: list[dict] = list(inv_res.data or [])
+    statuses_l = {str(s).strip().lower() for s in statuses}
+    investments: list[dict] = [
+        r for r in all_inv if str(r.get("status") or "").strip().lower() in statuses_l
+    ]
     inv_ids = [str(r.get("investmentId") or "").strip() for r in investments if r.get("investmentId")]
     if not inv_ids:
         return _empty_export_payload(y, mo, statuses, tds_rate)
@@ -336,16 +386,16 @@ def build_closing_investments_export(
 
     for chunk in _chunks(inv_ids, 80):
         try:
-            ps = supabase.table(_PS).select("*").in_("investmentId", chunk).execute()
-            for row in ps.data or []:
+            ps_rows = _select_in_all_paged(_PS, "investmentId", chunk, select_cols="*")
+            for row in ps_rows:
                 iid = str(row.get("investmentId") or "").strip()
                 if iid:
                     ps_by_inv[iid].append(row)
         except APIError as e:
             raise ValueError(f"payment_schedules: {e}") from e
         try:
-            pc = supabase.table(_PC).select("*").in_("investmentId", chunk).execute()
-            for row in pc.data or []:
+            pc_rows = _select_in_all_paged(_PC, "investmentId", chunk, select_cols="*")
+            for row in pc_rows:
                 iid = str(row.get("investmentId") or "").strip()
                 if iid:
                     pc_by_inv[iid].append(row)
@@ -783,6 +833,118 @@ def build_closing_investments_export(
         + int(r.get("linesPendingThisMonth") or 0)
         > 0
     ]
+
+    investment_participant_ids = {
+        str(r.get("participantId") or "").strip() for r in investments if r.get("participantId")
+    }
+    investment_partner_ids = {
+        str(r.get("agentId") or "").strip() for r in investments if r.get("agentId")
+    }
+    for rows in pc_by_inv.values():
+        for row in rows:
+            bid = str(row.get("beneficiaryPartnerId") or "").strip()
+            if bid:
+                investment_partner_ids.add(bid)
+
+    try:
+        all_participants = _select_all_paged(
+            "participants", select_cols=f"{p_pk},name,phone,email,address"
+        )
+    except APIError:
+        all_participants = []
+    for row in all_participants:
+        pid = str(row.get(p_pk) or "").strip()
+        if not pid or pid in investment_participant_ids:
+            continue
+        name_l = str(row.get("name") or "").lower()
+        if participant_search and participant_search.strip().lower() not in name_l:
+            continue
+        addr_l = str(row.get("address") or "").lower()
+        if location:
+            qloc = location.strip().lower()
+            if qloc != addr_l and qloc not in addr_l:
+                continue
+        pb = _bank_export(pid, bank_by_uid)
+        by_investment.append(
+            {
+                "investmentId": "",
+                "participantId": pid,
+                "participantName": str(row.get("name") or ""),
+                "participantPhone": str(row.get("phone") or ""),
+                "location": str(row.get("address") or ""),
+                "fundName": "",
+                "isAssuredFund": False,
+                "status": "NoInvestment",
+                "investmentDate": "",
+                "capital": 0.0,
+                "totalProfit": 0.0,
+                "expectedTotalReturn": 0.0,
+                "netPayableRemaining": 0.0,
+                "roiPercent": 0.0,
+                "durationMonths": 0,
+                "paidMonths": 0,
+                "remainingMonths": 0,
+                "monthlyPayout": 0.0,
+                "firstMonthPayout": 0.0,
+                "finalMonthPayout": 0.0,
+                "participantBankName": pb["bankName"],
+                "participantAccountNumber": pb["accountNumber"],
+                "participantIfsc": pb["ifscCode"],
+                "totalMonthlyCommissionAllPartners": 0.0,
+                "totalLifetimeCommissionAllPartners": 0.0,
+            }
+        )
+
+    try:
+        all_partners = _select_all_paged("partners", select_cols=f"{a_pk},name,phone,email")
+    except APIError:
+        all_partners = []
+    for row in all_partners:
+        pid = str(row.get(a_pk) or "").strip()
+        if not pid or pid in investment_partner_ids:
+            continue
+        if agent_query and not _partner_id_matches_agent_query(pid, {pid: row}, agent_query):
+            continue
+        pb = _bank_export(pid, bank_by_uid)
+        by_partner.append(
+            {
+                "partnerId": pid,
+                "partnerName": str(row.get("name") or ""),
+                "partnerPhone": str(row.get("phone") or ""),
+                "partnerRole": "NoInvestment",
+                "partnerLevel": 0,
+                "partnerCommissionRatePercent": 0.0,
+                "partnerMonthlyCommission": 0.0,
+                "partnerFirstMonthCommission": 0.0,
+                "partnerLastMonthCommission": 0.0,
+                "partnerLifetimeCommission": 0.0,
+                "partnerBankName": pb["bankName"],
+                "partnerAccountNumber": pb["accountNumber"],
+                "partnerIfsc": pb["ifscCode"],
+                "investmentId": "",
+                "participantId": "",
+                "participantName": "",
+                "participantPhone": "",
+                "location": "",
+                "fundName": "",
+                "isAssuredFund": False,
+                "status": "NoInvestment",
+                "investmentDate": "",
+                "capital": 0.0,
+                "totalProfit": 0.0,
+                "expectedTotalReturn": 0.0,
+                "netPayableRemaining": 0.0,
+                "roiPercent": 0.0,
+                "durationMonths": 0,
+                "paidMonths": 0,
+                "remainingMonths": 0,
+                "monthlyPayout": 0.0,
+                "firstMonthPayout": 0.0,
+                "finalMonthPayout": 0.0,
+                "totalMonthlyCommissionAllPartners": 0.0,
+                "totalLifetimeCommissionAllPartners": 0.0,
+            }
+        )
 
     return {
         "closingYear": y,

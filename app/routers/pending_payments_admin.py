@@ -23,7 +23,7 @@ from app.services.participant_portfolio_recalc import recalculate_participant_po
 from app.services.pending_payments_query import query_pending_payments_rollup
 from app.services.schedule_payout_workflow import (
     mark_partner_commission_schedules_paid,
-    mark_payment_schedule_paid,
+    mark_payment_schedule_paid_ex,
 )
 from app.utils.payout_id import new_payout_id
 from app.utils.supabase_errors import format_api_error
@@ -369,11 +369,11 @@ def admin_mark_schedules_paid(
 
     for psid in payload.participant_schedule_ids:
         try:
-            row = mark_payment_schedule_paid(int(psid))
+            row, changed_now = mark_payment_schedule_paid_ex(int(psid))
             results.append(
                 MarkPaidItemResult(ref=str(psid), kind="participant", ok=True, detail=None)
             )
-            if payload.record_payouts:
+            if payload.record_payouts and changed_now:
                 iid = str(row.get("investmentId") or "").strip()
                 inv_r = (
                     supabase.table("investments")
@@ -430,21 +430,13 @@ def admin_mark_schedules_paid(
     if pids:
         ref = ",".join(str(i) for i in pids)
         try:
-            mark_partner_commission_schedules_paid(pids)
+            changed_partner_rows = mark_partner_commission_schedules_paid(pids)
             results.append(
                 MarkPaidItemResult(ref=ref, kind="partner", ok=True, detail=None)
             )
-            if payload.record_payouts:
-                fetched = (
-                    supabase.table("partner_commission_schedules")
-                    .select("*")
-                    .in_("id", pids)
-                    .execute()
-                )
+            if payload.record_payouts and changed_partner_rows:
                 by_beneficiary: dict[str, list[dict]] = defaultdict(list)
-                for r in fetched.data or []:
-                    if str(r.get("status") or "").strip().lower() != "paid":
-                        continue
+                for r in changed_partner_rows:
                     uid = str(r.get("beneficiaryPartnerId") or "").strip()
                     if uid:
                         by_beneficiary[uid].append(r)
