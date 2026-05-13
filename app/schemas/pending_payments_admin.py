@@ -84,7 +84,14 @@ class MarkPaidRequest(BaseModel):
         default_factory=list,
         alias="partnerCommissionScheduleIds",
     )
-    record_payouts: bool = Field(default=False, alias="recordPayouts")
+    record_payouts: bool = Field(
+        default=True,
+        alias="recordPayouts",
+        description=(
+            "When true (default), insert paid ``payouts`` audit rows after marking schedules paid. "
+            "Set false only to mark schedules paid without creating payout records."
+        ),
+    )
     payment_method: Literal["BANK", "IMPS/NEFT", "CASH"] = Field(default="BANK", alias="paymentMethod")
     transaction_id: Optional[str] = Field(default=None, alias="transactionId")
     remarks: str = Field(default="")

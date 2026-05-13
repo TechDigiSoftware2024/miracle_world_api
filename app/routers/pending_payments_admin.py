@@ -23,7 +23,7 @@ from app.services.participant_portfolio_recalc import recalculate_participant_po
 from app.services.pending_payments_query import query_pending_payments_rollup
 from app.services.schedule_payout_workflow import (
     mark_partner_commission_schedules_paid,
-    mark_payment_schedule_paid_ex,
+    mark_payment_schedules_paid_batch,
 )
 from app.utils.payout_id import new_payout_id
 from app.utils.supabase_errors import format_api_error
@@ -34,9 +34,12 @@ router = APIRouter(prefix="/pending-payments", tags=["Admin", "Pending payments"
 # transactionId are absent: same user, method, payout calendar day (UTC), null transactionId, created
 # within this window, and remarks have no explicit payoutBatchKey= (batch-key rows stay isolated).
 PARTNER_PAYOUT_AUTO_MERGE_SECONDS = 900
+_INV_CHUNK = 80
 
 
-def _partner_remarks_have_batch_key(remarks: object) -> bool:
+def _chunks(xs: list, n: int):
+    for i in range(0, len(xs), n):
+        yield xs[i : i + n]
     return "payoutbatchkey=" in str(remarks or "").lower()
 
 
@@ -345,6 +348,9 @@ def admin_mark_schedules_paid(
 ):
     """Mark participant payment_schedules and/or partner_commission_schedules as paid; optional payout audit rows.
 
+    **Payout rows**: By default ``recordPayouts`` is **true**, so paid ``payouts`` audit rows are created
+    unless the client sets ``recordPayouts: false`` (legacy / reconciliation-only).
+
     Partner ``recordPayouts``: one **paid** ``payouts`` row per **beneficiaryPartnerId** in this request
     (amounts summed).     Optional ``partnerPayoutBatchKey`` (same value on multiple API calls) or a shared
     ``transactionId`` merges additional lines into that partner's existing paid row instead of creating another.
@@ -367,35 +373,64 @@ def admin_mark_schedules_paid(
     payouts_recorded = 0
     participant_acc: dict[str, list[tuple[int, dict, str]]] = defaultdict(list)
 
-    for psid in payload.participant_schedule_ids:
+    if payload.participant_schedule_ids:
+        ordered_ps = [int(x) for x in payload.participant_schedule_ids if x is not None]
         try:
-            row, changed_now = mark_payment_schedule_paid_ex(int(psid))
-            results.append(
-                MarkPaidItemResult(ref=str(psid), kind="participant", ok=True, detail=None)
-            )
-            if payload.record_payouts and changed_now:
-                iid = str(row.get("investmentId") or "").strip()
-                inv_r = (
-                    supabase.table("investments")
-                    .select("participantId")
-                    .eq("investmentId", iid)
-                    .limit(1)
-                    .execute()
-                )
-                uid = ""
-                if inv_r.data:
-                    uid = str(inv_r.data[0].get("participantId") or "").strip()
-                if uid:
-                    participant_acc[uid].append((int(psid), row, iid))
+            ps_batch = mark_payment_schedules_paid_batch(ordered_ps)
         except ValueError as e:
-            results.append(
-                MarkPaidItemResult(
-                    ref=str(psid),
-                    kind="participant",
-                    ok=False,
-                    detail=str(e),
+            for psid_int in ordered_ps:
+                results.append(
+                    MarkPaidItemResult(
+                        ref=str(psid_int),
+                        kind="participant",
+                        ok=False,
+                        detail=str(e),
+                    )
                 )
-            )
+        else:
+            changed_iids: set[str] = set()
+            for psid_int, (row, changed_now, err) in zip(ordered_ps, ps_batch):
+                if err:
+                    results.append(
+                        MarkPaidItemResult(
+                            ref=str(psid_int),
+                            kind="participant",
+                            ok=False,
+                            detail=err,
+                        )
+                    )
+                    continue
+                results.append(
+                    MarkPaidItemResult(ref=str(psid_int), kind="participant", ok=True, detail=None)
+                )
+                if changed_now:
+                    iid = str(row.get("investmentId") or "").strip()
+                    if iid:
+                        changed_iids.add(iid)
+
+            inv_to_part: dict[str, str] = {}
+            if payload.record_payouts and changed_iids:
+                for chunk in _chunks(sorted(changed_iids), _INV_CHUNK):
+                    try:
+                        inv_r = (
+                            supabase.table("investments")
+                            .select("investmentId,participantId")
+                            .in_("investmentId", chunk)
+                            .execute()
+                        )
+                        for r in inv_r.data or []:
+                            inv_to_part[str(r.get("investmentId") or "").strip()] = str(
+                                r.get("participantId") or ""
+                            ).strip()
+                    except APIError:
+                        continue
+                for psid_int, (row, changed_now, err) in zip(ordered_ps, ps_batch):
+                    if err or not changed_now:
+                        continue
+                    iid = str(row.get("investmentId") or "").strip()
+                    uid = inv_to_part.get(iid, "").strip()
+                    if uid:
+                        participant_acc[uid].append((psid_int, row, iid))
 
     if payload.record_payouts:
         for uid, items in participant_acc.items():
@@ -440,6 +475,7 @@ def admin_mark_schedules_paid(
                     uid = str(r.get("beneficiaryPartnerId") or "").strip()
                     if uid:
                         by_beneficiary[uid].append(r)
+                partner_recalc_uids: set[str] = set()
                 for uid, paid_rows in by_beneficiary.items():
                     cids = [int(r["id"]) for r in paid_rows]
                     tag = _partner_aggregate_tag(cids)
@@ -507,7 +543,9 @@ def admin_mark_schedules_paid(
                             admin_id=admin_id,
                         )
                     payouts_recorded += 1
-                    recalculate_partner_portfolio(uid)
+                    partner_recalc_uids.add(uid)
+                for pr_uid in partner_recalc_uids:
+                    recalculate_partner_portfolio(pr_uid)
         except ValueError as e:
             results.append(
                 MarkPaidItemResult(ref=ref, kind="partner", ok=False, detail=str(e))
