@@ -11,7 +11,10 @@ from postgrest.exceptions import APIError
 from app.db.database import supabase
 from app.services.investment_actions import sync_investment_status_with_payment_lines
 from app.services.partner_commission_schedule import sync_partner_commission_status_for_month
-from app.services.participant_portfolio_recalc import recalc_from_investment_id
+from app.services.participant_portfolio_recalc import (
+    recalc_from_investment_id,
+    recalc_from_investment_ids,
+)
 
 from app.utils.supabase_errors import format_api_error
 
@@ -159,11 +162,13 @@ def mark_payment_schedules_paid_batch(
                 inv_to_months[iid].add(int(mn))
             except (TypeError, ValueError):
                 continue
-        for iid in sorted(inv_to_months.keys()):
+        affected_inv = sorted(inv_to_months.keys())
+        for iid in affected_inv:
             for mn in sorted(inv_to_months[iid]):
                 sync_partner_commission_status_for_month(iid, mn, "paid")
             sync_investment_status_with_payment_lines(iid)
-            recalc_from_investment_id(iid)
+        if affected_inv:
+            recalc_from_investment_ids(affected_inv)
 
     return [results_by_id[sid] for sid in ordered_ids]
 
@@ -216,10 +221,13 @@ def mark_partner_commission_schedules_paid(commission_ids: list[int]) -> list[di
             }).in_("id", chunk).execute()
     except APIError as e:
         raise ValueError(format_api_error(e)) from e
-    seen_inv: set[str] = set()
-    for r in to_patch:
-        iid = str(r.get("investmentId") or "").strip()
-        if iid and iid not in seen_inv:
-            seen_inv.add(iid)
-            recalc_from_investment_id(iid)
+    inv_ids = sorted(
+        {
+            str(r.get("investmentId") or "").strip()
+            for r in to_patch
+            if str(r.get("investmentId") or "").strip()
+        }
+    )
+    if inv_ids:
+        recalc_from_investment_ids(inv_ids)
     return to_patch

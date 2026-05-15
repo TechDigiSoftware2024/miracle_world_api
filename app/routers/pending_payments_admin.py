@@ -35,12 +35,78 @@ router = APIRouter(prefix="/pending-payments", tags=["Admin", "Pending payments"
 # within this window, and remarks have no explicit payoutBatchKey= (batch-key rows stay isolated).
 PARTNER_PAYOUT_AUTO_MERGE_SECONDS = 900
 _INV_CHUNK = 80
+_USER_CHUNK = 50
+_SCHEDULE_CHUNK = 100
 
 
 def _chunks(xs: list, n: int):
     for i in range(0, len(xs), n):
         yield xs[i : i + n]
+
+
+def _partner_remarks_have_batch_key(remarks: object) -> bool:
     return "payoutbatchkey=" in str(remarks or "").lower()
+
+
+def _fetch_inv_to_participant(investment_ids: list[str]) -> dict[str, str]:
+    """Map investmentId -> participantId (raises on DB error)."""
+    inv_to_part: dict[str, str] = {}
+    ids = sorted({str(x).strip() for x in investment_ids if str(x).strip()})
+    for chunk in _chunks(ids, _INV_CHUNK):
+        try:
+            inv_r = (
+                supabase.table("investments")
+                .select("investmentId,participantId")
+                .in_("investmentId", chunk)
+                .execute()
+            )
+        except APIError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=format_api_error(e),
+            ) from e
+        for r in inv_r.data or []:
+            inv_to_part[str(r.get("investmentId") or "").strip()] = str(
+                r.get("participantId") or ""
+            ).strip()
+    return inv_to_part
+
+
+def _load_payout_remarks_by_users(
+    user_ids: list[str],
+    recipient_type: str,
+    *,
+    status: Optional[str] = None,
+) -> dict[str, str]:
+    """Lowercased remarks per userId (concatenated) for bulk idempotency tag checks."""
+    uids = sorted({str(u).strip() for u in user_ids if str(u).strip()})
+    out: dict[str, str] = {}
+    if not uids:
+        return out
+    for chunk in _chunks(uids, _USER_CHUNK):
+        try:
+            q = (
+                supabase.table("payouts")
+                .select("userId, remarks")
+                .eq("recipientType", recipient_type)
+                .in_("userId", chunk)
+            )
+            if status:
+                q = q.eq("status", status)
+            res = q.execute()
+        except APIError:
+            continue
+        for row in res.data or []:
+            uid = str(row.get("userId") or "").strip()
+            rmk = str(row.get("remarks") or "").lower()
+            out[uid] = f"{out.get(uid, '')} {rmk}".strip()
+    return out
+
+
+def _remarks_index_has_tag(remarks_index: dict[str, str], user_id: str, tag: str) -> bool:
+    if not tag:
+        return False
+    return tag.lower() in remarks_index.get(str(user_id).strip(), "")
 
 
 def _utc_payout_calendar_date(val) -> date:
@@ -408,35 +474,33 @@ def admin_mark_schedules_paid(
                     if iid:
                         changed_iids.add(iid)
 
-            inv_to_part: dict[str, str] = {}
             if payload.record_payouts and changed_iids:
-                for chunk in _chunks(sorted(changed_iids), _INV_CHUNK):
-                    try:
-                        inv_r = (
-                            supabase.table("investments")
-                            .select("investmentId,participantId")
-                            .in_("investmentId", chunk)
-                            .execute()
-                        )
-                        for r in inv_r.data or []:
-                            inv_to_part[str(r.get("investmentId") or "").strip()] = str(
-                                r.get("participantId") or ""
-                            ).strip()
-                    except APIError:
-                        continue
+                inv_to_part = _fetch_inv_to_participant(sorted(changed_iids))
                 for psid_int, (row, changed_now, err) in zip(ordered_ps, ps_batch):
                     if err or not changed_now:
                         continue
                     iid = str(row.get("investmentId") or "").strip()
                     uid = inv_to_part.get(iid, "").strip()
-                    if uid:
-                        participant_acc[uid].append((psid_int, row, iid))
+                    if not uid:
+                        results.append(
+                            MarkPaidItemResult(
+                                ref=str(psid_int),
+                                kind="participant",
+                                ok=False,
+                                detail=f"investment {iid} has no participantId (payout not recorded)",
+                            )
+                        )
+                        continue
+                    participant_acc[uid].append((psid_int, row, iid))
 
-    if payload.record_payouts:
+    if payload.record_payouts and participant_acc:
+        paid_remarks = _load_payout_remarks_by_users(
+            list(participant_acc.keys()), "participant", status="paid"
+        )
         for uid, items in participant_acc.items():
             sids = [t[0] for t in items]
             tag = _participant_aggregate_tag(sids)
-            if _payout_remarks_contain_tag(uid, "participant", tag, status="paid"):
+            if _remarks_index_has_tag(paid_remarks, uid, tag):
                 continue
             total_amt = sum(float(t[1].get("amount") or 0) for t in items)
             max_pd = max(_dt_for_payout(t[1].get("payoutDate")) for t in items)
@@ -459,7 +523,6 @@ def admin_mark_schedules_paid(
                 admin_id=admin_id,
             )
             payouts_recorded += 1
-            recalculate_participant_portfolio(uid)
 
     pids = sorted({int(x) for x in payload.partner_commission_schedule_ids if x is not None})
     if pids:
@@ -475,11 +538,13 @@ def admin_mark_schedules_paid(
                     uid = str(r.get("beneficiaryPartnerId") or "").strip()
                     if uid:
                         by_beneficiary[uid].append(r)
-                partner_recalc_uids: set[str] = set()
+                partner_paid_remarks = _load_payout_remarks_by_users(
+                    list(by_beneficiary.keys()), "partner", status="paid"
+                )
                 for uid, paid_rows in by_beneficiary.items():
                     cids = [int(r["id"]) for r in paid_rows]
                     tag = _partner_aggregate_tag(cids)
-                    if _payout_remarks_contain_tag(uid, "partner", tag, status="paid"):
+                    if _remarks_index_has_tag(partner_paid_remarks, uid, tag):
                         continue
                     total_amt = sum(float(r.get("amount") or 0) for r in paid_rows)
                     max_pd = max(_dt_for_payout(r.get("payoutDate")) for r in paid_rows)
@@ -543,9 +608,6 @@ def admin_mark_schedules_paid(
                             admin_id=admin_id,
                         )
                     payouts_recorded += 1
-                    partner_recalc_uids.add(uid)
-                for pr_uid in partner_recalc_uids:
-                    recalculate_partner_portfolio(pr_uid)
         except ValueError as e:
             results.append(
                 MarkPaidItemResult(ref=ref, kind="partner", ok=False, detail=str(e))
@@ -573,13 +635,28 @@ def admin_generate_payout_records_from_schedules(
     admin_id = str(current_user.get("userId", "") or "").strip()
     batch_key = _sanitize_batch_key(payload.partner_payout_batch_key)
     created_ids: List[str] = []
+    participants_to_recalc: set[str] = set()
+    partners_to_recalc: set[str] = set()
 
     ps_ids = sorted({int(x) for x in payload.participant_schedule_ids if x is not None})
     if ps_ids:
-        sr_all = (
-            supabase.table("payment_schedules").select("*").in_("id", ps_ids).execute()
-        )
-        found_ids = {int(r["id"]) for r in (sr_all.data or [])}
+        sr_rows: list[dict] = []
+        for chunk in _chunks(ps_ids, _SCHEDULE_CHUNK):
+            try:
+                part = (
+                    supabase.table("payment_schedules")
+                    .select("*")
+                    .in_("id", chunk)
+                    .execute()
+                )
+            except APIError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=format_api_error(e),
+                ) from e
+            sr_rows.extend(part.data or [])
+        sr_all_data = sr_rows
+        found_ids = {int(r["id"]) for r in sr_all_data}
         missing = [i for i in ps_ids if i not in found_ids]
         if missing:
             raise HTTPException(
@@ -589,24 +666,13 @@ def admin_generate_payout_records_from_schedules(
         inv_ids = sorted(
             {
                 str(r.get("investmentId") or "").strip()
-                for r in (sr_all.data or [])
+                for r in sr_all_data
                 if str(r.get("investmentId") or "").strip()
             }
         )
-        inv_to_part: dict[str, str] = {}
-        if inv_ids:
-            ir = (
-                supabase.table("investments")
-                .select("investmentId,participantId")
-                .in_("investmentId", inv_ids)
-                .execute()
-            )
-            for r in ir.data or []:
-                inv_to_part[str(r.get("investmentId") or "").strip()] = str(
-                    r.get("participantId") or ""
-                ).strip()
+        inv_to_part = _fetch_inv_to_participant(inv_ids) if inv_ids else {}
         by_participant: dict[str, list[dict]] = defaultdict(list)
-        for row in sr_all.data or []:
+        for row in sr_all_data:
             iid = str(row.get("investmentId") or "").strip()
             pid = inv_to_part.get(iid, "").strip()
             if not pid:
@@ -616,6 +682,9 @@ def admin_generate_payout_records_from_schedules(
                 )
             by_participant[pid].append(row)
 
+        pending_remarks = _load_payout_remarks_by_users(
+            list(by_participant.keys()), "participant", status="pending"
+        )
         for uid, rows in by_participant.items():
             for row in rows:
                 st = str(row.get("status") or "").strip().lower()
@@ -626,7 +695,7 @@ def admin_generate_payout_records_from_schedules(
                     )
             schedule_ids = [int(r["id"]) for r in rows]
             tag = _participant_aggregate_tag(schedule_ids)
-            if _payout_remarks_contain_tag(uid, "participant", tag, status="pending"):
+            if _remarks_index_has_tag(pending_remarks, uid, tag):
                 continue
             total_amt = sum(float(r.get("amount") or 0) for r in rows)
             max_pd = max(_dt_for_payout(r.get("payoutDate")) for r in rows)
@@ -655,17 +724,26 @@ def admin_generate_payout_records_from_schedules(
                 admin_id=admin_id,
             )
             created_ids.append(pid)
-            recalculate_participant_portfolio(uid)
+            participants_to_recalc.add(uid)
 
     pc_ids = sorted({int(x) for x in payload.partner_commission_schedule_ids if x is not None})
     if pc_ids:
-        cr_all = (
-            supabase.table("partner_commission_schedules")
-            .select("*")
-            .in_("id", pc_ids)
-            .execute()
-        )
-        found_c = {int(r["id"]) for r in (cr_all.data or [])}
+        cr_rows: list[dict] = []
+        for chunk in _chunks(pc_ids, _SCHEDULE_CHUNK):
+            try:
+                part = (
+                    supabase.table("partner_commission_schedules")
+                    .select("*")
+                    .in_("id", chunk)
+                    .execute()
+                )
+            except APIError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=format_api_error(e),
+                ) from e
+            cr_rows.extend(part.data or [])
+        found_c = {int(r["id"]) for r in cr_rows}
         missing_c = [i for i in pc_ids if i not in found_c]
         if missing_c:
             raise HTTPException(
@@ -673,11 +751,14 @@ def admin_generate_payout_records_from_schedules(
                 detail=f"partner commission schedule(s) not found: {missing_c}",
             )
         by_beneficiary: dict[str, list[dict]] = defaultdict(list)
-        for row in cr_all.data or []:
+        for row in cr_rows:
             uid = str(row.get("beneficiaryPartnerId") or "").strip()
             if uid:
                 by_beneficiary[uid].append(row)
 
+        partner_pending_remarks = _load_payout_remarks_by_users(
+            list(by_beneficiary.keys()), "partner", status="pending"
+        )
         for uid, rows in by_beneficiary.items():
             for row in rows:
                 st = str(row.get("status") or "").strip().lower()
@@ -688,7 +769,7 @@ def admin_generate_payout_records_from_schedules(
                     )
             cids = [int(r["id"]) for r in rows]
             tag = _partner_aggregate_tag(cids)
-            if _payout_remarks_contain_tag(uid, "partner", tag, status="pending"):
+            if _remarks_index_has_tag(partner_pending_remarks, uid, tag):
                 continue
             total_amt = sum(float(r.get("amount") or 0) for r in rows)
             max_pd = max(_dt_for_payout(r.get("payoutDate")) for r in rows)
@@ -751,6 +832,11 @@ def admin_generate_payout_records_from_schedules(
                     admin_id=admin_id,
                 )
                 created_ids.append(pid)
-            recalculate_partner_portfolio(uid)
+            partners_to_recalc.add(uid)
+
+    for uid in participants_to_recalc:
+        recalculate_participant_portfolio(uid)
+    for uid in partners_to_recalc:
+        recalculate_partner_portfolio(uid)
 
     return GeneratePayoutsResponse(payoutsCreated=len(created_ids), payoutIds=created_ids)
