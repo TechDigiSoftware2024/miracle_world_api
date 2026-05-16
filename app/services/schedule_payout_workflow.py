@@ -81,6 +81,8 @@ def mark_payment_schedule_paid_ex(schedule_id: int) -> tuple[dict, bool]:
 
 def mark_payment_schedules_paid_batch(
     ordered_ids: list[int],
+    *,
+    defer_post_save: bool = False,
 ) -> list[tuple[dict, bool, Optional[str]]]:
     """
     Mark many participant ``payment_schedules`` rows paid in fewer round-trips.
@@ -151,29 +153,75 @@ def mark_payment_schedules_paid_batch(
             rows_by_id[sid] = row
             results_by_id[sid] = (row, True, None)
 
-        inv_to_months: dict[str, set[int]] = defaultdict(set)
-        for sid in to_patch:
-            r0 = rows_by_id[sid]
-            iid = str(r0.get("investmentId") or "").strip()
-            mn = r0.get("monthNumber")
-            if not iid or mn is None:
-                continue
-            try:
-                inv_to_months[iid].add(int(mn))
-            except (TypeError, ValueError):
-                continue
-        affected_inv = sorted(inv_to_months.keys())
-        for iid in affected_inv:
-            for mn in sorted(inv_to_months[iid]):
-                sync_partner_commission_status_for_month(iid, mn, "paid")
-            sync_investment_status_with_payment_lines(iid)
-        if affected_inv:
-            recalc_from_investment_ids(affected_inv)
+        if not defer_post_save:
+            inv_to_months: dict[str, set[int]] = defaultdict(set)
+            for sid in to_patch:
+                r0 = rows_by_id[sid]
+                iid = str(r0.get("investmentId") or "").strip()
+                mn = r0.get("monthNumber")
+                if not iid or mn is None:
+                    continue
+                try:
+                    inv_to_months[iid].add(int(mn))
+                except (TypeError, ValueError):
+                    continue
+            affected_inv = sorted(inv_to_months.keys())
+            for iid in affected_inv:
+                for mn in sorted(inv_to_months[iid]):
+                    sync_partner_commission_status_for_month(iid, mn, "paid")
+                sync_investment_status_with_payment_lines(iid)
+            if affected_inv:
+                recalc_from_investment_ids(affected_inv)
 
     return [results_by_id[sid] for sid in ordered_ids]
 
 
-def mark_partner_commission_schedules_paid(commission_ids: list[int]) -> list[dict]:
+def collect_participant_mark_paid_post_process(
+    batch: list[tuple[dict, bool, Optional[str]]],
+) -> dict[str, list[int]]:
+    """Investment ids and month numbers for rows that transitioned to paid in this batch."""
+    inv_to_months: dict[str, set[int]] = defaultdict(set)
+    for row, changed_now, err in batch:
+        if err or not changed_now:
+            continue
+        iid = str(row.get("investmentId") or "").strip()
+        mn = row.get("monthNumber")
+        if not iid or mn is None:
+            continue
+        try:
+            inv_to_months[iid].add(int(mn))
+        except (TypeError, ValueError):
+            continue
+    return {iid: sorted(months) for iid, months in inv_to_months.items()}
+
+
+def fetch_commission_schedule_rows(commission_ids: list[int]) -> list[dict]:
+    """Load partner_commission_schedules rows by id (for payout recording after mark-paid)."""
+    ids = sorted({int(x) for x in commission_ids if x is not None})
+    if not ids:
+        return []
+    rows: list[dict] = []
+    for chunk in _chunks(ids, _BATCH_IN):
+        try:
+            res = (
+                supabase.table("partner_commission_schedules")
+                .select("*")
+                .in_("id", chunk)
+                .execute()
+            )
+        except APIError as e:
+            raise ValueError(format_api_error(e)) from e
+        rows.extend(res.data or [])
+    if len(rows) != len(ids):
+        raise ValueError("One or more partner commission schedule ids were not found")
+    return rows
+
+
+def mark_partner_commission_schedules_paid(
+    commission_ids: list[int],
+    *,
+    defer_recalc: bool = False,
+) -> list[dict]:
     """
     Set partner_commission_schedules to paid for each line that is still pending/due.
 
@@ -228,6 +276,6 @@ def mark_partner_commission_schedules_paid(commission_ids: list[int]) -> list[di
             if str(r.get("investmentId") or "").strip()
         }
     )
-    if inv_ids:
+    if inv_ids and not defer_recalc:
         recalc_from_investment_ids(inv_ids)
     return to_patch

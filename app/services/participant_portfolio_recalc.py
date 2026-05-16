@@ -71,7 +71,10 @@ def _line_profit_for_portfolio(inv: dict, line_amount: float) -> float:
 def _payout_is_schedule_mirror(remarks: object) -> bool:
     """True when this payout row duplicates payment_schedules already rolled into portfolio."""
     s = str(remarks or "").lower()
-    return "participantscheduleids=" in s
+    return (
+        "participantscheduleids=" in s
+        or "aggregated participantscheduleids=" in s
+    )
 
 
 def _payout_profit_for_portfolio(inv: Optional[dict], amount: float) -> float:

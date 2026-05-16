@@ -122,28 +122,3 @@ class MarkPaidResponse(BaseModel):
 
     results: List[MarkPaidItemResult]
     payouts_recorded: int = Field(default=0, alias="payoutsRecorded")
-
-
-class GeneratePayoutsRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
-
-    participant_schedule_ids: List[int] = Field(default_factory=list, alias="participantScheduleIds")
-    partner_commission_schedule_ids: List[int] = Field(
-        default_factory=list,
-        alias="partnerCommissionScheduleIds",
-    )
-    payment_method: Literal["BANK", "IMPS/NEFT", "CASH"] = Field(default="BANK", alias="paymentMethod")
-    remarks: str = Field(default="")
-    partner_payout_batch_key: Optional[str] = Field(
-        default=None,
-        alias="partnerPayoutBatchKey",
-        description="Same as mark-paid: merge pending partner payouts per beneficiary across calls with this key.",
-    )
-
-
-
-class GeneratePayoutsResponse(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    payouts_created: int = Field(alias="payoutsCreated")
-    payout_ids: List[str] = Field(alias="payoutIds")
